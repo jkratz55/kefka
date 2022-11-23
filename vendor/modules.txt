@@ -1,0 +1,7 @@
+# github.com/confluentinc/confluent-kafka-go v1.9.2
+## explicit; go 1.13
+github.com/confluentinc/confluent-kafka-go/kafka
+github.com/confluentinc/confluent-kafka-go/kafka/librdkafka_vendor
+# github.com/jkratz55/slices v1.0.0
+## explicit; go 1.18
+github.com/jkratz55/slices
