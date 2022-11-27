@@ -7,6 +7,15 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
+// DeliveryReport represents the results of producing a message asynchronously
+// to Kafka.
+type DeliveryReport struct {
+	Topic     string
+	Partition int32
+	Offset    int64
+	Error     error
+}
+
 type ProducerOptions struct {
 	BaseProducer       *kafka.Producer
 	KeyMarshaller      MarshallFunc
@@ -159,11 +168,4 @@ func (p *Producer) Close() {
 	if p.deliveryReportChan != nil {
 		close(p.deliveryReportChan)
 	}
-}
-
-type DeliveryReport struct {
-	Topic     string
-	Partition int32
-	Offset    int64
-	Error     error
 }

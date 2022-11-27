@@ -2,96 +2,16 @@ package kefka
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/jkratz55/slices"
 )
 
+// ErrorCallback is a function that is invoked with an error value when an error
+// occurs processing messages from Kafka.
 type ErrorCallback func(err error)
-
-type TypedMessage[K, V any] struct {
-	Key       K
-	Value     V
-	Topic     string
-	Partition int
-	Offset    int64
-	Timestamp time.Time
-	Headers   []Header
-}
-
-type Header struct {
-	Key   string
-	Value []byte
-}
-
-type TypedMessageHandler[K, V any] interface {
-	Handle(msg TypedMessage[K, V]) error
-}
-
-type TypedConsumer[K, V any] struct {
-	baseConsumer      *kafka.Consumer
-	keyUnmarshaller   UnmarshallFunc
-	valueUnmarshaller UnmarshallFunc
-	handler           TypedMessageHandler[K, V]
-	errorCallback     ErrorCallback
-	quit              chan struct{}
-}
-
-func (c *TypedConsumer[K, V]) Start() {
-	for {
-		select {
-		case <-c.quit:
-			return
-		default:
-			msg, err := c.baseConsumer.ReadMessage(time.Second * 10)
-			if err != nil {
-				c.errorCallback(err)
-				continue
-			}
-			typedMessage, err := c.mapMessage(msg)
-			if err != nil {
-				c.errorCallback(err)
-			}
-			_ = c.handler.Handle(typedMessage)
-		}
-	}
-}
-
-func (c *TypedConsumer[K, V]) Close() {
-	c.quit <- struct{}{}
-	_ = c.baseConsumer.Close()
-}
-
-func (c *TypedConsumer[K, V]) mapMessage(msg *kafka.Message) (TypedMessage[K, V], error) {
-	headers := make([]Header, 0)
-	for _, header := range msg.Headers {
-		headers = append(headers, Header{
-			header.Key,
-			header.Value,
-		})
-	}
-	var key K
-	err := c.keyUnmarshaller(msg.Key, &key)
-	if err != nil {
-		return TypedMessage[K, V]{}, fmt.Errorf("error unmarshalling key: %w", err)
-	}
-	var val V
-	err = c.valueUnmarshaller(msg.Value, &val)
-	if err != nil {
-		return TypedMessage[K, V]{}, fmt.Errorf("error unmarshalling value: %w", err)
-	}
-	typedMessage := TypedMessage[K, V]{
-		Key:       key,
-		Value:     val,
-		Topic:     *msg.TopicPartition.Topic,
-		Partition: int(msg.TopicPartition.Partition),
-		Offset:    int64(msg.TopicPartition.Offset),
-		Timestamp: msg.Timestamp,
-		Headers:   headers,
-	}
-	return typedMessage, nil
-}
 
 // MessageHandler is a type that handles/processes messages from Kafka.
 //
@@ -125,6 +45,131 @@ type CancelFunc func()
 //
 // If using auto commit there is no need to invoke this function.
 type Commit func()
+
+type ConsumerOptions struct {
+	KafkaConfig  *kafka.ConfigMap
+	Handler      MessageHandler
+	Topic        string
+	PollTimeout  time.Duration
+	ErrorHandler ErrorCallback
+	Logger       Logger
+}
+
+type Consumer struct {
+	baseConsumer *kafka.Consumer
+	handler      MessageHandler
+	pollTimeout  time.Duration
+	errorHandler ErrorCallback
+	logger       Logger
+	topic        string
+
+	close   sync.Once
+	running bool
+	termCh  chan struct{}
+}
+
+func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
+	// Sanity check on API usage, these are required fields and documented as such.
+	// If the API is being misused or not provided the documented required properties
+	// just panic.
+	if opts.KafkaConfig == nil {
+		panic("")
+	}
+	if opts.Handler == nil {
+		panic("")
+	}
+	if opts.Topic == "" {
+		panic("")
+	}
+
+	// Use sane defaults if properties/fields not provided.
+	if opts.PollTimeout == 0 {
+		opts.PollTimeout = time.Second * 10
+	}
+
+	baseConsumer, err := kafka.NewConsumer(opts.KafkaConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create Confluent Kafka Consumer with provided config: %w", err)
+	}
+	err = baseConsumer.Subscribe(opts.Topic, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to subscribe to topic %s: %w", opts.Topic, err)
+	}
+
+	consumer := &Consumer{
+		baseConsumer: baseConsumer,
+		handler:      opts.Handler,
+		pollTimeout:  opts.PollTimeout,
+		errorHandler: opts.ErrorHandler,
+		logger:       opts.Logger,
+		topic:        opts.Topic,
+		close:        sync.Once{},
+		running:      false,
+		termCh:       make(chan struct{}),
+	}
+	return consumer, nil
+}
+
+func (c *Consumer) Start() {
+	if c.running {
+		panic("consumer is already running")
+	}
+	for {
+		select {
+		case <-c.termCh:
+			return
+		default:
+			c.readMessage()
+		}
+	}
+}
+
+// Lag returns the current lag for the consumer as a map where the key is the
+// topic|partition and the value is the current lag.
+func (c *Consumer) Lag() (map[string]int64, error) {
+
+}
+
+func (c *Consumer) Close() {
+	if !c.running {
+		panic("cannot close a Consumer that isn't running, illegal use of API")
+	}
+	c.close.Do(func() {
+		c.running = false
+		c.termCh <- struct{}{}
+		c.baseConsumer.Close()
+	})
+}
+
+func (c *Consumer) readMessage() {
+	msg, err := c.baseConsumer.ReadMessage(c.pollTimeout)
+	if err != nil {
+		c.errorHandler(fmt.Errorf("error reading message from Kafka: %w", err))
+		return
+	}
+	ack := func() {
+		if _, err := c.baseConsumer.Commit(); err != nil && c.errorHandler != nil {
+			c.errorHandler(fmt.Errorf("error committing offsets to Kafka for offset %d: %w", msg.TopicPartition.Offset, err))
+		}
+	}
+	c.handler.Handle(msg, ack)
+}
+
+type Reader struct {
+	base    *kafka.Consumer
+	handler MessageHandler
+}
+
+func (r *Reader) Read(topicParitions []kafka.TopicPartition) error {
+	err := r.base.Assign(topicParitions)
+	if err != nil {
+		return fmt.Errorf("error assigning topics/patitions: %w", err)
+	}
+
+	for {
+		// r.base.
+	}
+}
 
 // Consume uses the provided Consumer and reads messages from Kafka in a separate
 // goroutine. A CancelFunc is returned to cancel/stop consumption of messages from
@@ -173,11 +218,12 @@ func Consume(consumer *kafka.Consumer, handler MessageHandler, errCb ErrorCallba
 	return cancel
 }
 
-// Lag fetches the current lag for a given consumer, topic and partition.
+// LagForTopicPartition fetches the current lag for a given consumer, topic
+// and partition.
 //
 // Lag is meant to be used when working in a consumer group. To fetch how
 // many messages are in a given topic/partition use MessageCount instead.
-func Lag(client *kafka.Consumer, topic string, partition int) (int64, error) {
+func LagForTopicPartition(client *kafka.Consumer, topic string, partition int) (int64, error) {
 	partitions, err := client.Assignment()
 	if err != nil {
 		return 0, fmt.Errorf("error querying assignments: %w", err)
