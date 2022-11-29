@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
+	"fmt"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -51,10 +52,30 @@ func GobUnmarshaller() UnmarshallFunc {
 	}
 }
 
-type logLevel uint
+// StringMarshaller returns a MarshallFunc that is only capable of marshalling
+// a string or any type that implements the fmt.Stringer interface. If any other
+// type is provided an error will be returned.
+//
+// StringMarshaller is useful for marshalling keys which are typically a string.
+func StringMarshaller() MarshallFunc {
+	return func(v any) ([]byte, error) {
+		switch v.(type) {
+		case string:
+			s := v.(string)
+			return []byte(s), nil
+		case fmt.Stringer:
+			s := v.(fmt.Stringer)
+			return []byte(s.String()), nil
+		default:
+			return nil, fmt.Errorf("StringMarshaller only supports strings and types that implement fmt.Stringer")
+		}
+	}
+}
+
+type LogLevel uint
 
 const (
-	DebugLevel logLevel = iota
+	DebugLevel LogLevel = iota
 	InfoLevel
 	WarnLevel
 	ErrorLevel
@@ -62,11 +83,11 @@ const (
 )
 
 type Logger interface {
-	Printf(logLevel, string, ...any)
+	Printf(LogLevel, string, ...any)
 }
 
-type LoggerFunc func(logLevel, string, ...any)
+type LoggerFunc func(LogLevel, string, ...any)
 
-func (l LoggerFunc) Printf(level logLevel, msg string, args ...any) {
+func (l LoggerFunc) Printf(level LogLevel, msg string, args ...any) {
 	l(level, msg, args...)
 }

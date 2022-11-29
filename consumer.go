@@ -9,6 +9,11 @@ import (
 	"github.com/jkratz55/slices"
 )
 
+const (
+	// DefaultPollTimeout is the default timeout when polling events from Kafka.
+	DefaultPollTimeout = time.Second * 10
+)
+
 // ErrorCallback is a function that is invoked with an error value when an error
 // occurs processing messages from Kafka.
 type ErrorCallback func(err error)
@@ -46,21 +51,62 @@ type CancelFunc func()
 // If using auto commit there is no need to invoke this function.
 type Commit func()
 
+// ConsumerOptions contains the configuration options to instantiate and initialize
+// a Consumer.
+//
+// Note: Some of the fields are required and will cause a panic. Take note of the GoDoc
+// comments for each of the fields in the struct.
 type ConsumerOptions struct {
-	KafkaConfig  *kafka.ConfigMap
-	Handler      MessageHandler
-	Topic        string
-	PollTimeout  time.Duration
+
+	// The Kafka configuration that is used to create the underlying Confluent Kafka
+	// Consumer type. This is a required field. A zero value (nil) will cause a panic.
+	KafkaConfig *kafka.ConfigMap
+
+	// The handler that will be handed the message from Kafka and process it. This is
+	// a required field. A zero value (nil) will cause a panic.
+	Handler MessageHandler
+
+	// The topic to consume. This is a required field. A zero value ("") will cause
+	// a panic.
+	Topic string
+
+	// Configures the timeout polling messages from Kafka. This field is optional.
+	// If the zero-value is provided DefaultPollTimeout will be used.
+	PollTimeout time.Duration
+
+	// An optional callback that is invoked when an error occurs polling/reading
+	// messages from Kafka.
+	//
+	// While optional, it is highly recommended to provide an ErrorCallback.
+	// Otherwise, errors from the underlying Confluent Kafka Consumer are discarded.
+	// Ideally, these errors should be logged and/or capture metrics.
 	ErrorHandler ErrorCallback
-	Logger       Logger
 }
 
+// Consumer is a type for consumer messages from Kafka.
+//
+// Under the hood Consumer uses Confluent Kafka consumer type. Consumer is in
+// essence a wrapper around the Confluent Kafka Go library.
+//
+// The zero value of Consumer is not usable. Instances of Consumer should be
+// created using the NewConsumer function.
+//
+// The Consumer type is only meant to be used when using Kafka consumer groups.
+// If not using Consumer groups use the Reader type instead. The `group.id`
+// property must be set in the Kafka ConfigMap.
+//
+// The Kafka configuration provided is very important to the behavior of the
+// Consumer. The Consumer type does not support all the features of the underlying
+// Confluent Kafka client. It does however, support manual commits if that behavior
+// is required. The MessageHandler accepts a Kafka message and a Commit func. If
+// auto commits are disabled the caller must invoke the Commit function when they
+// want to commit offsets back to Kafka. If auto commits are on the Commit function
+// can be ignored. In fact, it should not be called at all if using auto commits.
 type Consumer struct {
 	baseConsumer *kafka.Consumer
 	handler      MessageHandler
 	pollTimeout  time.Duration
 	errorHandler ErrorCallback
-	logger       Logger
 	topic        string
 
 	close   sync.Once
@@ -68,6 +114,12 @@ type Consumer struct {
 	termCh  chan struct{}
 }
 
+// NewConsumer creates and initializes a new instance of the Consumer type.
+//
+// If the API is misused (missing required fields, not setting group.id in
+// the Kafka config, etc.) this function will panic. If the Consumer cannot
+// be created with the provided configuration or subscribing to the provided
+// topic fails a non-nil error value will be returned.
 func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 	// Sanity check on API usage, these are required fields and documented as such.
 	// If the API is being misused or not provided the documented required properties
@@ -80,6 +132,9 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 	}
 	if opts.Topic == "" {
 		panic("")
+	}
+	if groupId, _ := opts.KafkaConfig.Get("group.id", ""); groupId == "" {
+		panic("group.id is a required property in the Kafka configuration")
 	}
 
 	// Use sane defaults if properties/fields not provided.
@@ -101,7 +156,6 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 		handler:      opts.Handler,
 		pollTimeout:  opts.PollTimeout,
 		errorHandler: opts.ErrorHandler,
-		logger:       opts.Logger,
 		topic:        opts.Topic,
 		close:        sync.Once{},
 		running:      false,
@@ -110,10 +164,17 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 	return consumer, nil
 }
 
+// Start begins polling Kafka for messages/events passing the read messages off
+// to the provided MessageHandler.
+//
+// This function is blocking and in most use cases it should be called in a
+// separate goroutine. It will continue to run until Close is called or the
+// program exits.
 func (c *Consumer) Start() {
 	if c.running {
-		panic("consumer is already running")
+		return
 	}
+	c.running = true
 	for {
 		select {
 		case <-c.termCh:
@@ -127,18 +188,26 @@ func (c *Consumer) Start() {
 // Lag returns the current lag for the consumer as a map where the key is the
 // topic|partition and the value is the current lag.
 func (c *Consumer) Lag() (map[string]int64, error) {
-
+	return nil, nil
 }
 
-func (c *Consumer) Close() {
-	if !c.running {
-		panic("cannot close a Consumer that isn't running, illegal use of API")
-	}
-	c.close.Do(func() {
+// Assignments fetches and returns the currently assigned topics and partitions
+// for the Consumer.
+func (c *Consumer) Assignments() ([]kafka.TopicPartition, error) {
+	return c.baseConsumer.Assignment()
+}
+
+// Close stops polling messages/events from Kafka and cleans up resources including
+// calling Close on the underlying Confluent Kafka consumer. Once Close has been
+// called the instance of Consumer is no longer usable.
+//
+// This function should only be called once.
+func (c *Consumer) Close() error {
+	if c.running {
 		c.running = false
 		c.termCh <- struct{}{}
-		c.baseConsumer.Close()
-	})
+	}
+	return c.baseConsumer.Close()
 }
 
 func (c *Consumer) readMessage() {
