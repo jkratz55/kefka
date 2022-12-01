@@ -198,6 +198,21 @@ func (p *Producer) Produce(topic string, key any, val any) error {
 	return nil
 }
 
+// ProduceMessage produces a single message asynchronously. ProduceMessage accepts
+// a raw kafka.Message. ProduceMessage is meant to compliment Produce when the caller
+// needs more control over the message.
+//
+// Delivery reports are delivered on the channel provided in ProducerOptions when
+// initializes the Producer. If the zero-value (nil) channel was used, this is fire
+// and forget with no notification mechanism.
+func (p *Producer) ProduceMessage(msg *kafka.Message) error {
+	err := p.baseProducer.Produce(msg, p.deliveryChan)
+	if err != nil {
+		return fmt.Errorf("message could not be enqued: %w", err)
+	}
+	return nil
+}
+
 // SyncProduce produces a single message synchronously.
 //
 // Technically the underlying Confluent Kafka library doesn't directly support
@@ -223,29 +238,49 @@ func (p *Producer) SyncProduce(ctx context.Context, topic string, key any, val a
 		Key:   keyData,
 	}
 
-	err = p.baseProducer.Produce(msg, nil)
+	ch := make(chan kafka.Event, 1)
+	err = p.baseProducer.Produce(msg, ch)
 	if err != nil {
 		return fmt.Errorf("message could not be enqued: %w", err)
 	}
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("message not delivered: %w", ctx.Err())
-	case e := <-p.baseProducer.Events():
-		switch e.(type) {
-		case *kafka.Message:
-			m := e.(*kafka.Message)
-			if m.TopicPartition.Error != nil {
-				return fmt.Errorf("error publishing/producing message: %w", m.TopicPartition.Error)
-			}
-			return nil
-		case *kafka.Error:
-			err := e.(*kafka.Error)
-			return fmt.Errorf("error producing message: %w", err)
-		default:
-			// ignore
-			return nil
+		return fmt.Errorf("aborted waiting for message delivery report: %w", ctx.Err())
+	case e := <-ch:
+		m := e.(*kafka.Message)
+		if m.TopicPartition.Error != nil {
+			return fmt.Errorf("error publishing/producing message: %w", m.TopicPartition.Error)
 		}
+		return nil
+	}
+}
+
+// SyncProduceMessage produces a single message asynchronously. SyncProduceMessage accepts
+// a raw kafka.Message. SyncProduceMessage is meant to compliment SyncProduce when the caller
+// needs more control over the message.
+//
+// Technically the underlying Confluent Kafka library doesn't directly support
+// producing events synchronously. Instead, SyncProduceMessage produces the message
+// asynchronously and awaits notification of delivery on a channel. If the context
+// is done before receiving on the delivery chan this method will return with an
+// error but there is a possibility the message may still be delivered.
+func (p *Producer) SyncProduceMessage(ctx context.Context, msg *kafka.Message) error {
+	ch := make(chan kafka.Event, 1)
+	err := p.baseProducer.Produce(msg, ch)
+	if err != nil {
+		return fmt.Errorf("message could not be enqued: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("aborted waiting for message delivery report: %w", ctx.Err())
+	case e := <-ch:
+		m := e.(*kafka.Message)
+		if m.TopicPartition.Error != nil {
+			return fmt.Errorf("error publishing/producing message: %w", m.TopicPartition.Error)
+		}
+		return nil
 	}
 }
 
@@ -254,28 +289,6 @@ func (p *Producer) SyncProduce(ctx context.Context, topic string, key any, val a
 // timeoutMs. Returns the number of outstanding events still un-flushed.
 func (p *Producer) Flush(timeout time.Duration) int {
 	return p.baseProducer.Flush(int(timeout.Milliseconds()))
-}
-
-// FlushAll will continuously flush messages until all messages/events have been
-// flushed or the context is cancelled or exceeds the deadline.
-//
-// FlushAll accepts a context and a timeout for each flush operation. After each
-// flush operation the context is inspected to ensure it hasn't been cancelled and
-// the deadline hasn't been exceeded. The flush operation itself cannot be interrupted.
-// Rather, the context being called or exceeded only prevent further flushes from
-// running. It is recommended not to use large flush timeouts and be mindful of
-// that flush itself cannot be interrupted when working with the context.
-func (p *Producer) FlushAll(ctx context.Context, flushTimeoutMs int) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			if remaining := p.baseProducer.Flush(flushTimeoutMs); remaining == 0 {
-				return nil
-			}
-		}
-	}
 }
 
 // Close delegates to the close method on the underlying Confluent Kafka consumer
@@ -293,26 +306,18 @@ func (p *Producer) Close() {
 	}
 }
 
-func Produce(p *Producer, topic string, key, value []byte, deliveryCh chan kafka.Event) error {
-	return p.baseProducer.Produce(&kafka.Message{
-		TopicPartition: kafka.TopicPartition{
-			Topic:     &topic,
-			Partition: kafka.PartitionAny,
-		},
-		Value: value,
-		Key:   key,
-	}, deliveryCh)
-}
-
-func ProduceMessage(p *Producer, msg *kafka.Message, deliveryCh chan kafka.Event) error {
-	return p.baseProducer.Produce(msg, deliveryCh)
-}
-
-func SyncProduce(ctx context.Context, p *Producer, topic string, key, value []byte) error {
+// SyncProduce is a convenient function for producing messages synchronously.
+// Technically the Confluent Kafka Producer doesn't support producing events
+// synchronously. Instead, this function creates a delivery channel and wait on it
+// for the delivery report/acknowledgement.
+//
+// SyncProduce accepts a context so that this operation can be cancelled or
+// timeout. However, it is very important to note this does not cancel producing
+// the message. It simply cancels waiting on the delivery report. The message still
+// may be delivered.
+func SyncProduce(ctx context.Context, p *kafka.Producer, topic string, key, value []byte) error {
 	ch := make(chan kafka.Event, 1)
-	defer close(ch)
-
-	err := p.baseProducer.Produce(&kafka.Message{
+	err := p.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic:     &topic,
 			Partition: kafka.PartitionAny,
@@ -326,12 +331,51 @@ func SyncProduce(ctx context.Context, p *Producer, topic string, key, value []by
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("gave up on waiting for message delivery acknowledgement: %w", ctx.Err())
+		return fmt.Errorf("aborted waiting for message delivery report: %w", ctx.Err())
 	case e := <-ch:
 		m := e.(*kafka.Message)
 		if m.TopicPartition.Error != nil {
 			return fmt.Errorf("error publishing/producing message: %w", m.TopicPartition.Error)
 		}
 		return nil
+	}
+}
+
+// SyncProduceMessage is a convenient function for producing messages synchronously.
+// Technically the Confluent Kafka Producer doesn't support producing events
+// synchronously. Instead, this function creates a delivery channel and wait on it
+// for the delivery report/acknowledgement.
+//
+// SyncProduceMessage accepts a context so that this operation can be cancelled or
+// timeout. However, it is very important to note this does not cancel producing
+// the message. It simply cancels waiting on the delivery report. The message still
+// may be delivered.
+func SyncProduceMessage(ctx context.Context, p *kafka.Producer, msg *kafka.Message) error {
+	ch := make(chan kafka.Event, 1)
+	err := p.Produce(msg, ch)
+	if err != nil {
+		return fmt.Errorf("message could not be enqued: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("aborted waiting for message delivery report: %w", ctx.Err())
+	case e := <-ch:
+		m := e.(*kafka.Message)
+		if m.TopicPartition.Error != nil {
+			return fmt.Errorf("error publishing/producing message: %w", m.TopicPartition.Error)
+		}
+		return nil
+	}
+}
+
+// FlushAll will continuously call Flush on the Kafka Producer until there are
+// zero messages awaiting delivery.
+//
+// This function is blocking and should really only be called if you need to
+// force the internal queue empty. An example might be an application exiting.
+func FlushAll(p *kafka.Producer) {
+	for remaining := p.Flush(5000); remaining > 0; {
+		// keep calling flush until it returns 0 elements remaining
 	}
 }

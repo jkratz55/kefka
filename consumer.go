@@ -1,8 +1,8 @@
 package kefka
 
 import (
+	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
@@ -109,7 +109,6 @@ type Consumer struct {
 	errorHandler ErrorCallback
 	topic        string
 
-	close   sync.Once
 	running bool
 	termCh  chan struct{}
 }
@@ -125,13 +124,13 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 	// If the API is being misused or not provided the documented required properties
 	// just panic.
 	if opts.KafkaConfig == nil {
-		panic("")
+		panic("Kafka ConfigMap is required, illegal use of API")
 	}
 	if opts.Handler == nil {
-		panic("")
+		panic("MessageHandler is required, illegal use of API")
 	}
 	if opts.Topic == "" {
-		panic("")
+		panic("Topic is required, illegal use of API")
 	}
 	if groupId, _ := opts.KafkaConfig.Get("group.id", ""); groupId == "" {
 		panic("group.id is a required property in the Kafka configuration")
@@ -157,20 +156,19 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 		pollTimeout:  opts.PollTimeout,
 		errorHandler: opts.ErrorHandler,
 		topic:        opts.Topic,
-		close:        sync.Once{},
 		running:      false,
 		termCh:       make(chan struct{}),
 	}
 	return consumer, nil
 }
 
-// Start begins polling Kafka for messages/events passing the read messages off
+// Consume begins polling Kafka for messages/events passing the read messages off
 // to the provided MessageHandler.
 //
 // This function is blocking and in most use cases it should be called in a
 // separate goroutine. It will continue to run until Close is called or the
 // program exits.
-func (c *Consumer) Start() {
+func (c *Consumer) Consume() {
 	if c.running {
 		return
 	}
@@ -224,19 +222,139 @@ func (c *Consumer) readMessage() {
 	c.handler.Handle(msg, ack)
 }
 
-type Reader struct {
-	base    *kafka.Consumer
-	handler MessageHandler
+var nopCommit = func() {}
+
+type PartitionEOFCallback func(topic string, partition int, offset int64)
+
+type ReaderOptions struct {
+	KafkaConfig          *kafka.ConfigMap
+	MessageHandler       MessageHandler
+	ErrorCallback        ErrorCallback
+	PartitionEOFCallback PartitionEOFCallback
+	TopicPartitions      kafka.TopicPartitions
+	PollTimeout          time.Duration
 }
 
-func (r *Reader) Read(topicParitions []kafka.TopicPartition) error {
+// ReadTopicPartitions consumes messages from Kafka outside a consumer group. A
+// new Confluent Kafka consumer is created from the configuration provided but
+// ReadTopicPartitions automatically will add or overwrite specific values to
+// ensure it guarantees certain behaviors. The following Kafka configuration
+// cannot be overridden.
+//
+//	enable.partition.eof -> true
+//	enable.auto.commit -> false
+//	group.id -> kefkareader
+//
+// ReadTopicPartitions is blocking and will run forever unless the context is
+// either cancelled or exceeds a deadline. In most use cases you'll want to
+// call ReadTopicPartitions from a new goroutine.
+//
+// ReadTopicPartitions is capable or consuming multiple topics/partitions. But,
+// the through put will likely be higher if this function is used with one topic
+// and one partition.
+func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
+
+	// Overrides configurations required for this function to work as designed.
+	_ = opts.KafkaConfig.SetKey("enable.partition.eof", true)
+	_ = opts.KafkaConfig.SetKey("enable.auto.commit", false)
+	_ = opts.KafkaConfig.SetKey("group.id", "kefkareader")
+
+	// Use default poll timeout if one wasn't provided
+	if opts.PollTimeout == 0 {
+		opts.PollTimeout = time.Second * 10
+	}
+
+	consumer, err := kafka.NewConsumer(opts.KafkaConfig)
+	if err != nil {
+		return fmt.Errorf("unable to create Confluent Kafka Consumer with provided config: %w", err)
+	}
+
+	err = consumer.Assign(opts.TopicPartitions)
+	if err != nil {
+		return fmt.Errorf("error assigning topics/patitions: %w", err)
+	}
+	defer consumer.Unassign()
+	defer consumer.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			e := consumer.Poll(int(opts.PollTimeout.Milliseconds()))
+			switch t := e.(type) {
+			case *kafka.Message:
+				// Passes the message to the MessageHandler with a no-op Commit func.
+				// Even if the handler some reason calls commit it won't have any
+				// effect.
+				msg := e.(*kafka.Message)
+				opts.MessageHandler.Handle(msg, nopCommit)
+			case *kafka.Error:
+				// If an error callback was registered it will be called with the
+				// error. Otherwise, we drop the error on the floor and move on.
+				if opts.ErrorCallback != nil {
+					err := e.(*kafka.Error)
+					opts.ErrorCallback(err)
+				}
+			case kafka.PartitionEOF:
+				// If the partition EOF was registered it will be called with the
+				// topic, partition, and offset notifying the callback the end of
+				// the partition has been reached.
+				if opts.PartitionEOFCallback != nil {
+					tp := e.(kafka.PartitionEOF)
+					opts.PartitionEOFCallback(*tp.Topic, int(tp.Partition), int64(tp.Offset))
+				}
+			default:
+				fmt.Println("Ignoring event of type", t)
+			}
+		}
+	}
+}
+
+type Reader struct {
+	base           *kafka.Consumer
+	handler        MessageHandler
+	errorCb        ErrorCallback
+	partitionEOFCb PartitionEOFCallback
+}
+
+func (r *Reader) Read(ctx context.Context, topicParitions []kafka.TopicPartition) error {
 	err := r.base.Assign(topicParitions)
 	if err != nil {
 		return fmt.Errorf("error assigning topics/patitions: %w", err)
 	}
+	defer r.base.Unassign()
 
 	for {
-		// r.base.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			e := r.base.Poll(10000)
+			switch e.(type) {
+			case *kafka.Message:
+				// Passes the message to the MessageHandler with a no-op Commit func.
+				// Even if the handler some reason calls commit it won't have any
+				// effect.
+				msg := e.(*kafka.Message)
+				r.handler.Handle(msg, nopCommit)
+			case *kafka.Error:
+				// If an error callback was registered it will be called with the
+				// error. Otherwise, we drop the error on the floor and move on.
+				if r.errorCb != nil {
+					err := e.(*kafka.Error)
+					r.errorCb(err)
+				}
+			case *kafka.PartitionEOF:
+				// If the partition EOF was registered it will be called with the
+				// topic, partition, and offset notifying the callback the end of
+				// the partition has been reached.
+				if r.partitionEOFCb != nil {
+					tp := e.(*kafka.TopicPartition)
+					r.partitionEOFCb(*tp.Topic, int(tp.Partition), int64(tp.Offset))
+				}
+			}
+		}
 	}
 }
 
