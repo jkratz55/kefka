@@ -36,28 +36,28 @@ func main() {
 		"retries":           5,
 	}
 
-	logger, err := zap.NewProduction()
+	logger, err := zap.NewDevelopment(zap.IncreaseLevel(zap.DebugLevel))
 	if err != nil {
 		panic(err)
 	}
 
-	reportChan := make(chan kefka.DeliveryReport, 1000)
-	go func() {
-		for report := range reportChan {
-			if report.Error != nil {
-				logger.Error("error delivery message",
-					zap.Error(err))
-			} else {
-				logger.Info(fmt.Sprintf("Delivered message topic: %s, partition: %d, offset: %d", report.Topic, report.Partition, report.Offset))
-			}
-		}
-	}()
+	// reportChan := make(chan kefka.DeliveryReport, 1000)
+	// go func() {
+	// 	for report := range reportChan {
+	// 		if report.Error != nil {
+	// 			logger.Error("error delivery message",
+	// 				zap.Error(err))
+	// 		} else {
+	// 			logger.Info(fmt.Sprintf("Delivered message topic: %s, partition: %d, offset: %d", report.Topic, report.Partition, report.Offset))
+	// 		}
+	// 	}
+	// }()
 
 	producer, err := kefka.NewProducer(kefka.ProducerOptions{
-		KafkaConfig:        kafkaConfig,
-		KeyMarshaller:      kefka.StringMarshaller(),
-		ValueMarshaller:    kefka.JsonMarshaller(),
-		DeliveryReportChan: reportChan,
+		KafkaConfig:     kafkaConfig,
+		KeyMarshaller:   kefka.StringMarshaller(),
+		ValueMarshaller: kefka.JsonMarshaller(),
+		// DeliveryReportChan: reportChan,
 		Logger: kefka.LoggerFunc(func(level kefka.LogLevel, s string, a ...any) {
 			zapLevel := mapKefkaLogLevelToZap(level)
 			logger.Log(zapLevel, fmt.Sprintf(s, a...))
@@ -67,20 +67,20 @@ func main() {
 		panic(err)
 	}
 
-	// logger.Info("Testing produce asynchronously")
-	// for i := 0; i < 1000; i++ {
-	// 	id := uuid.New()
-	// 	data := order{
-	// 		ID:        id.String(),
-	// 		FirstName: "Billy",
-	// 		LastName:  "Bob",
-	// 		Total:     9.99,
-	// 	}
-	// 	if err := producer.Produce("test", id, data); err != nil {
-	// 		logger.Error("failed to produce message",
-	// 			zap.Error(err))
-	// 	}
-	// }
+	logger.Info("Testing produce asynchronously")
+	for i := 0; i < 1000; i++ {
+		id := uuid.New()
+		data := order{
+			ID:        id.String(),
+			FirstName: "Billy",
+			LastName:  "Bob",
+			Total:     9.99,
+		}
+		if err := producer.Produce("test", id, data, nil); err != nil {
+			logger.Error("failed to produce message",
+				zap.Error(err))
+		}
+	}
 
 	logger.Info("Testing produce synchronously")
 	for i := 0; i < 10; i++ {
@@ -99,11 +99,9 @@ func main() {
 		cancel()
 	}
 
-	for {
-		time.Sleep(time.Second * 1)
+	for remaining := producer.Flush(10000); remaining > 0; {
+		// keep flushing until the toilet is unclogged
 	}
-
-	producer.Flush(time.Second * 10)
 	producer.Close()
 }
 

@@ -183,13 +183,6 @@ func (c *Consumer) Consume() {
 	}
 }
 
-// Lag returns the current lag for the consumer as a map where the key is the
-// topic|partition and the value is the current lag.
-func (c *Consumer) Lag() (map[string]int64, error) {
-	var adminClient *kafka.AdminClient
-	adminClient.
-}
-
 // Assignments fetches and returns the currently assigned topics and partitions
 // for the Consumer.
 func (c *Consumer) Assignments() ([]kafka.TopicPartition, error) {

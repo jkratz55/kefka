@@ -71,23 +71,3 @@ func StringMarshaller() MarshallFunc {
 		}
 	}
 }
-
-type LogLevel uint
-
-const (
-	DebugLevel LogLevel = iota
-	InfoLevel
-	WarnLevel
-	ErrorLevel
-	FatalLevel
-)
-
-type Logger interface {
-	Printf(LogLevel, string, ...any)
-}
-
-type LoggerFunc func(LogLevel, string, ...any)
-
-func (l LoggerFunc) Printf(level LogLevel, msg string, args ...any) {
-	l(level, msg, args...)
-}
