@@ -30,8 +30,8 @@ func main() {
 		TopicPartitions: []kafka.TopicPartition{
 			{
 				Topic:     &topic,
-				Partition: 0,
-				Offset:    0,
+				Partition: 1,
+				Offset:    323800,
 			},
 		},
 	}

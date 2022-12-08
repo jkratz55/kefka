@@ -186,7 +186,8 @@ func (c *Consumer) Consume() {
 // Lag returns the current lag for the consumer as a map where the key is the
 // topic|partition and the value is the current lag.
 func (c *Consumer) Lag() (map[string]int64, error) {
-	return nil, nil
+	var adminClient *kafka.AdminClient
+	adminClient.
 }
 
 // Assignments fetches and returns the currently assigned topics and partitions
@@ -282,18 +283,18 @@ func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
 			return ctx.Err()
 		default:
 			e := consumer.Poll(int(opts.PollTimeout.Milliseconds()))
-			switch t := e.(type) {
+			switch e.(type) {
 			case *kafka.Message:
 				// Passes the message to the MessageHandler with a no-op Commit func.
 				// Even if the handler some reason calls commit it won't have any
 				// effect.
 				msg := e.(*kafka.Message)
 				opts.MessageHandler.Handle(msg, nopCommit)
-			case *kafka.Error:
+			case kafka.Error:
 				// If an error callback was registered it will be called with the
 				// error. Otherwise, we drop the error on the floor and move on.
 				if opts.ErrorCallback != nil {
-					err := e.(*kafka.Error)
+					err := e.(kafka.Error)
 					opts.ErrorCallback(err)
 				}
 			case kafka.PartitionEOF:
@@ -304,8 +305,6 @@ func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
 					tp := e.(kafka.PartitionEOF)
 					opts.PartitionEOFCallback(*tp.Topic, int(tp.Partition), int64(tp.Offset))
 				}
-			default:
-				fmt.Println("Ignoring event of type", t)
 			}
 		}
 	}
