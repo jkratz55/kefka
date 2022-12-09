@@ -41,6 +41,9 @@ func main() {
 		panic(err)
 	}
 
+	offsets := reader.QueryWatermarkOffsets()
+	fmt.Println(offsets)
+
 	go reader.Read()
 
 	time.Sleep(10 * time.Second)

@@ -3,6 +3,7 @@ package kefka
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
@@ -198,6 +199,45 @@ func (c *Consumer) Consume() {
 // for the Consumer.
 func (c *Consumer) Assignments() ([]kafka.TopicPartition, error) {
 	return c.baseConsumer.Assignment()
+}
+
+// Lag calculates the lag for each topic/partition assigned to the Consumer.
+//
+// Note: It does not calculate the lag for entire consumer group if there are
+// other consumers in the group.
+func (c *Consumer) Lag() (map[string]int64, error) {
+	assignments, err := c.Assignments()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch assignments: %w", err)
+	}
+
+	committed, err := c.baseConsumer.Committed(assignments, 5000)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch committed offsets: %w", err)
+	}
+
+	lag := make(map[string]int64)
+	for i := range committed {
+		low, high, err := c.baseConsumer.QueryWatermarkOffsets(*committed[i].Topic, committed[i].Partition, 5000)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query watermark offsets: %w", err)
+		}
+
+		offset := int64(committed[i].Offset)
+		if committed[i].Offset == kafka.OffsetInvalid {
+			offset = low
+		}
+		topic := *committed[i].Topic
+		partition := strconv.Itoa(int(committed[i].Partition))
+		lag[topic+"|"+partition] = high - offset
+	}
+	return lag, nil
+}
+
+// LagForTopicPartition returns the current lag of the Consumer for a specific
+// topic/partition.
+func (c *Consumer) LagForTopicPartition(topic string, partition int) (int64, error) {
+	return LagForTopicPartition(c.baseConsumer, topic, partition)
 }
 
 // Close stops polling messages/events from Kafka and cleans up resources including
@@ -404,12 +444,13 @@ func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
 //	enable.auto.commit -> false
 //	group.id -> kefkareader
 type Reader struct {
-	base           *kafka.Consumer
-	handler        MessageHandler
-	errorCb        ErrorCallback
-	partitionEOFCb PartitionEOFCallback
-	pollTimeout    int
-	logger         Logger
+	base            *kafka.Consumer
+	handler         MessageHandler
+	errorCb         ErrorCallback
+	partitionEOFCb  PartitionEOFCallback
+	pollTimeout     int
+	logger          Logger
+	topicPartitions kafka.TopicPartitions
 
 	term chan struct{}
 }
@@ -459,14 +500,35 @@ func NewReader(opts ReaderOptions) (*Reader, error) {
 	}
 
 	return &Reader{
-		base:           consumer,
-		handler:        opts.MessageHandler,
-		errorCb:        opts.ErrorCallback,
-		partitionEOFCb: opts.PartitionEOFCallback,
-		pollTimeout:    int(opts.PollTimeout.Milliseconds()),
-		logger:         opts.Logger,
-		term:           make(chan struct{}),
+		base:            consumer,
+		handler:         opts.MessageHandler,
+		errorCb:         opts.ErrorCallback,
+		partitionEOFCb:  opts.PartitionEOFCallback,
+		pollTimeout:     int(opts.PollTimeout.Milliseconds()),
+		logger:          opts.Logger,
+		term:            make(chan struct{}),
+		topicPartitions: opts.TopicPartitions,
 	}, nil
+}
+
+// QueryWatermarkOffsets queries Kafka to get the starting and ending offsets for
+// all the topics/partitions specified in the TopicPartitions field in ReaderOptions
+// and returning them as a map where the key is topic|partition -> OffsetWatermarks.
+//
+// Because each topic and partition is queried individually the caller must check
+// the Error field of the OffsetWatermarks type to ensure the operation succeeded.
+func (r *Reader) QueryWatermarkOffsets() map[string]OffsetWatermarks {
+	watermarks := make(map[string]OffsetWatermarks)
+	for _, tp := range r.topicPartitions {
+		low, high, err := r.base.QueryWatermarkOffsets(*tp.Topic, tp.Partition, 5000)
+		partition := strconv.Itoa(int(tp.Partition))
+		watermarks[*tp.Topic+"|"+partition] = OffsetWatermarks{
+			Low:   low,
+			High:  high,
+			Error: err,
+		}
+	}
+	return watermarks
 }
 
 // Read begins polling Kafka for messages/events and passing the messages to the
@@ -566,12 +628,18 @@ func Consume(consumer *kafka.Consumer, handler MessageHandler, errCb ErrorCallba
 	return cancel
 }
 
+type MetadataClient interface {
+	Assignment() (partitions []kafka.TopicPartition, err error)
+	Committed(partitions []kafka.TopicPartition, timeoutMs int) (offsets []kafka.TopicPartition, err error)
+	QueryWatermarkOffsets(topic string, partition int32, timeoutMs int) (low int64, high int64, err error)
+}
+
 // LagForTopicPartition fetches the current lag for a given consumer, topic
 // and partition.
 //
 // Lag is meant to be used when working in a consumer group. To fetch how
 // many messages are in a given topic/partition use MessageCount instead.
-func LagForTopicPartition(client *kafka.Consumer, topic string, partition int) (int64, error) {
+func LagForTopicPartition(client MetadataClient, topic string, partition int) (int64, error) {
 	partitions, err := client.Assignment()
 	if err != nil {
 		return 0, fmt.Errorf("error querying assignments: %w", err)
@@ -600,10 +668,16 @@ func LagForTopicPartition(client *kafka.Consumer, topic string, partition int) (
 }
 
 // MessageCount returns the count of messages for a given topic/partition.
-func MessageCount(client *kafka.Consumer, topic string, partition int) (int64, error) {
+func MessageCount(client MetadataClient, topic string, partition int) (int64, error) {
 	low, high, err := client.QueryWatermarkOffsets(topic, int32(partition), 10000)
 	if err != nil {
 		return 0, fmt.Errorf("error querying watermark offsets: %w", err)
 	}
 	return high - low, nil
+}
+
+type OffsetWatermarks struct {
+	Low   int64
+	High  int64
+	Error error
 }
