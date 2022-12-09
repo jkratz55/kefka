@@ -1,12 +1,18 @@
 package kefka
 
 import (
-	"bytes"
-	"encoding/gob"
 	"encoding/json"
 	"fmt"
 
+	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/vmihailenco/msgpack/v5"
+)
+
+const (
+	// LastOffset specifies to use the most recent offset available for a partition
+	LastOffset kafka.Offset = -1
+	// FirstOffset specifies to use the least recent offset available for a partition
+	FirstOffset kafka.Offset = -2
 )
 
 type MarshallFunc func(v any) ([]byte, error)
@@ -34,21 +40,6 @@ func MsgpackMarshaller() MarshallFunc {
 func MsgpackUnmarshaller() UnmarshallFunc {
 	return func(data []byte, v any) error {
 		return msgpack.Unmarshal(data, v)
-	}
-}
-
-func GobMarshaller() MarshallFunc {
-	return func(v any) ([]byte, error) {
-		buffer := &bytes.Buffer{}
-		err := gob.NewEncoder(buffer).Encode(v)
-		return buffer.Bytes(), err
-	}
-}
-
-func GobUnmarshaller() UnmarshallFunc {
-	return func(data []byte, v any) error {
-		reader := bytes.NewReader(data)
-		return gob.NewDecoder(reader).Decode(v)
 	}
 }
 

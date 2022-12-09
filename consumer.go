@@ -81,6 +81,10 @@ type ConsumerOptions struct {
 	// Otherwise, errors from the underlying Confluent Kafka Consumer are discarded.
 	// Ideally, these errors should be logged and/or capture metrics.
 	ErrorHandler ErrorCallback
+
+	// Allows plugging in a third party Logger. By default, the Logger from the
+	// standard library will be used if one is not provided at INFO level.
+	Logger Logger
 }
 
 // Consumer is a type for consumer messages from Kafka.
@@ -108,6 +112,7 @@ type Consumer struct {
 	pollTimeout  time.Duration
 	errorHandler ErrorCallback
 	topic        string
+	logger       Logger
 
 	running bool
 	termCh  chan struct{}
@@ -138,7 +143,11 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 
 	// Use sane defaults if properties/fields not provided.
 	if opts.PollTimeout == 0 {
-		opts.PollTimeout = time.Second * 10
+		opts.PollTimeout = DefaultPollTimeout
+	}
+	// Create a default logger if one was not provided
+	if opts.Logger == nil {
+		opts.Logger = defaultLogger()
 	}
 
 	baseConsumer, err := kafka.NewConsumer(opts.KafkaConfig)
@@ -156,6 +165,7 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 		pollTimeout:  opts.PollTimeout,
 		errorHandler: opts.ErrorHandler,
 		topic:        opts.Topic,
+		logger:       opts.Logger,
 		running:      false,
 		termCh:       make(chan struct{}),
 	}
@@ -170,6 +180,7 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 // program exits.
 func (c *Consumer) Consume() {
 	if c.running {
+		c.logger.Printf(WarnLevel, "Consumer already running, call to Consumer is a no-op")
 		return
 	}
 	c.running = true
@@ -205,28 +216,82 @@ func (c *Consumer) Close() error {
 func (c *Consumer) readMessage() {
 	msg, err := c.baseConsumer.ReadMessage(c.pollTimeout)
 	if err != nil {
-		c.errorHandler(fmt.Errorf("error reading message from Kafka: %w", err))
+		switch e := err.(type) {
+		case kafka.Error:
+			c.logger.Printf(ErrorLevel, "error polling from Kafka: %s Code: %d", e.Error(), e.Code())
+		default:
+			c.logger.Printf(ErrorLevel, "error polling from Kafka: %s", err)
+		}
+		c.errorHandler(err)
 		return
 	}
 	ack := func() {
 		if _, err := c.baseConsumer.Commit(); err != nil && c.errorHandler != nil {
-			c.errorHandler(fmt.Errorf("error committing offsets to Kafka for offset %d: %w", msg.TopicPartition.Offset, err))
+			c.logger.Printf(ErrorLevel, "error committing offset to Kafka, Topic %s Partition %d Offset %d Err %s",
+				*msg.TopicPartition.Topic, msg.TopicPartition.Partition, msg.TopicPartition.Offset, err)
+			c.errorHandler(err)
+		} else {
+			c.logger.Printf(DebugLevel, "Successfully committed offset %d for topic %s partition %d",
+				msg.TopicPartition.Offset, *msg.TopicPartition.Topic, msg.TopicPartition.Partition)
 		}
 	}
+	start := time.Now()
 	c.handler.Handle(msg, ack)
+	c.logger.Printf(DebugLevel, "Executed MessageHandler for message with offset %d, topic %s partition %d in %d seconds",
+		msg.TopicPartition.Offset, *msg.TopicPartition.Topic, msg.TopicPartition.Partition, time.Since(start).Seconds())
 }
 
 var nopCommit = func() {}
 
+// PartitionEOFCallback is a function type that is invoked when the end of the
+// partition is reached.
 type PartitionEOFCallback func(topic string, partition int, offset int64)
 
+// ReaderOptions is a type representing the configuration options to instantiate
+// and initialize a Reader.
+//
+// Note: There are fields that are mandatory and if not provided will result in
+// a panic.
 type ReaderOptions struct {
-	KafkaConfig          *kafka.ConfigMap
-	MessageHandler       MessageHandler
-	ErrorCallback        ErrorCallback
+	// The Kafka configuration that is used to create the underlying Confluent Kafka
+	// Consumer type. This is a required field. A zero value (nil) will cause a panic.
+	KafkaConfig *kafka.ConfigMap
+	// The handler that will be handed the message from Kafka and process it. This is
+	// a required field. A zero value (nil) will cause a panic.
+	MessageHandler MessageHandler
+	// An optional callback that is invoked when an error occurs polling/reading
+	// messages from Kafka.
+	//
+	// While optional, it is highly recommended to provide an ErrorCallback.
+	// Otherwise, errors from the underlying Confluent Kafka Consumer are discarded.
+	// Ideally, these errors should be logged and/or capture metrics.
+	ErrorCallback ErrorCallback
+	// An optional callback that is invoked when the Reader reaches the end of a
+	// topic/partition.
 	PartitionEOFCallback PartitionEOFCallback
-	TopicPartitions      kafka.TopicPartitions
-	PollTimeout          time.Duration
+	// The topics and partitions to be read. This is a required field and at least
+	// one TopicPartition must be supplied. Each TopicPartition should provide the
+	// topic, partition, and starting offset. It is important to note the starting
+	// offset of 0 will default to the latest offset if 0 is not a valid offset.
+	// Optionally the values FirstOffset and LastOffset can be passed to start at
+	// the beginning or end of the partition respectively.
+	//
+	// Example:
+	//	topic := "test"
+	//	TopicPartitions: []kafka.TopicPartition{
+	//		{
+	//			Topic:     &topic,
+	//			Partition: 0,
+	//			Offset:    kefka.FirstOffset,
+	//		},
+	//	},
+	TopicPartitions kafka.TopicPartitions
+	// Configures the timeout polling messages from Kafka. This field is optional.
+	// If the zero-value is provided DefaultPollTimeout will be used.
+	PollTimeout time.Duration
+	// Allows plugging in a third party Logger. By default, the Logger from the
+	// standard library will be used if one is not provided at INFO level.
+	Logger Logger
 }
 
 // ReadTopicPartitions consumes messages from Kafka outside a consumer group. A
@@ -255,7 +320,10 @@ func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
 
 	// Use default poll timeout if one wasn't provided
 	if opts.PollTimeout == 0 {
-		opts.PollTimeout = time.Second * 10
+		opts.PollTimeout = DefaultPollTimeout
+	}
+	if opts.Logger == nil {
+		opts.Logger = defaultLogger()
 	}
 
 	consumer, err := kafka.NewConsumer(opts.KafkaConfig)
@@ -267,8 +335,18 @@ func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
 	if err != nil {
 		return fmt.Errorf("error assigning topics/patitions: %w", err)
 	}
-	defer consumer.Unassign()
-	defer consumer.Close()
+	defer func(consumer *kafka.Consumer) {
+		err := consumer.Unassign()
+		if err != nil {
+			opts.Logger.Printf(WarnLevel, "Error unassigning topic/partitions: %s", err)
+		}
+	}(consumer)
+	defer func(consumer *kafka.Consumer) {
+		err := consumer.Close()
+		if err != nil {
+			opts.Logger.Printf(WarnLevel, "Error closing base Kafka Consumer: %s", err)
+		}
+	}(consumer)
 
 	for {
 		select {
@@ -303,26 +381,108 @@ func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
 	}
 }
 
+// Reader is a type for reading messages from Kafka topics/partitions.
+//
+// Under the hood Reader uses Confluent Kafka consumer type. Reader is in
+// essence a wrapper around the Confluent Kafka Go library for reading messages
+// outside a consumer group.
+//
+// The zero value of Reader is not usable. Instances of Reader should be
+// created using the NewReader function
+//
+// In contrast to Consumer, Reader is meant to serve use cases where messages
+// are read from Kafka but not consumed. In other words, offsets are not committed
+// back to Kafka, and it is safe for multiple instances to read the same messages
+// possibly over and over. As messages are read from Kafka they are passed to a
+// provided MessageHandler to handle/process the message. A noop Commit is passed
+// to the MessageHandler, so even if its called it has no effect.
+//
+// In order to guarantee the behavior of Reader certain Kafka configuration properties
+// are overridden and cannot be altered.
+//
+//	enable.partition.eof -> true
+//	enable.auto.commit -> false
+//	group.id -> kefkareader
 type Reader struct {
 	base           *kafka.Consumer
 	handler        MessageHandler
 	errorCb        ErrorCallback
 	partitionEOFCb PartitionEOFCallback
+	pollTimeout    int
+	logger         Logger
+
+	term chan struct{}
 }
 
-func (r *Reader) Read(ctx context.Context, topicParitions []kafka.TopicPartition) error {
-	err := r.base.Assign(topicParitions)
-	if err != nil {
-		return fmt.Errorf("error assigning topics/patitions: %w", err)
-	}
-	defer r.base.Unassign()
+// NewReader creates and initializes a new ready to use instance of Reader.
+//
+// If the API is misused (missing required fields, not setting group.id in
+// the Kafka config, etc.) this function will panic. If the Reader cannot
+// be created with the provided configuration or assigning the topics/partitions
+// fails a non-nil error value will be returned.
+func NewReader(opts ReaderOptions) (*Reader, error) {
 
+	// Sanity check on API usage, these are required fields and documented as such.
+	// If the API is being misused or not provided the documented required properties
+	// just panic.
+	if opts.KafkaConfig == nil {
+		panic("Kafka ConfigMap is required, illegal use of API")
+	}
+	if opts.MessageHandler == nil {
+		panic("MessageHandler is required, illegal use of API")
+	}
+	if len(opts.TopicPartitions) == 0 {
+		panic("Topics and partitions to read must be specified, illegal use of API")
+	}
+
+	// Overrides configurations required for this function to work as designed.
+	_ = opts.KafkaConfig.SetKey("enable.partition.eof", true)
+	_ = opts.KafkaConfig.SetKey("enable.auto.commit", false)
+	_ = opts.KafkaConfig.SetKey("group.id", "kefkareader")
+
+	// Use default poll timeout if one wasn't provided
+	if opts.PollTimeout == 0 {
+		opts.PollTimeout = DefaultPollTimeout
+	}
+	if opts.Logger == nil {
+		opts.Logger = defaultLogger()
+	}
+
+	consumer, err := kafka.NewConsumer(opts.KafkaConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create Confluent Kafka Consumer with provided config: %w", err)
+	}
+
+	err = consumer.Assign(opts.TopicPartitions)
+	if err != nil {
+		return nil, fmt.Errorf("error assigning topics/patitions: %w", err)
+	}
+
+	return &Reader{
+		base:           consumer,
+		handler:        opts.MessageHandler,
+		errorCb:        opts.ErrorCallback,
+		partitionEOFCb: opts.PartitionEOFCallback,
+		pollTimeout:    int(opts.PollTimeout.Milliseconds()),
+		logger:         opts.Logger,
+		term:           make(chan struct{}),
+	}, nil
+}
+
+// Read begins polling Kafka for messages/events and passing the messages to the
+// configured MessageHandler.
+//
+// This method is blocking and will run until Close is called. In most cases this
+// method should be called on a new goroutine.
+//
+// This method should never be called more than once.
+func (r *Reader) Read() {
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-r.term:
+			return
 		default:
-			e := r.base.Poll(10000)
+			e := r.base.Poll(r.pollTimeout)
 			switch e.(type) {
 			case *kafka.Message:
 				// Passes the message to the MessageHandler with a no-op Commit func.
@@ -330,24 +490,33 @@ func (r *Reader) Read(ctx context.Context, topicParitions []kafka.TopicPartition
 				// effect.
 				msg := e.(*kafka.Message)
 				r.handler.Handle(msg, nopCommit)
-			case *kafka.Error:
+			case kafka.Error:
 				// If an error callback was registered it will be called with the
 				// error. Otherwise, we drop the error on the floor and move on.
 				if r.errorCb != nil {
-					err := e.(*kafka.Error)
+					err := e.(kafka.Error)
 					r.errorCb(err)
 				}
-			case *kafka.PartitionEOF:
+			case kafka.PartitionEOF:
 				// If the partition EOF was registered it will be called with the
 				// topic, partition, and offset notifying the callback the end of
 				// the partition has been reached.
 				if r.partitionEOFCb != nil {
-					tp := e.(*kafka.TopicPartition)
+					tp := e.(kafka.PartitionEOF)
 					r.partitionEOFCb(*tp.Topic, int(tp.Partition), int64(tp.Offset))
 				}
+			default:
+				// other events are ignored
+				r.logger.Printf(DebugLevel, "Event %s ignored", e)
 			}
 		}
 	}
+}
+
+// Close stops the Consumer. After calling Close the Consumer is no longer usable.
+func (r *Reader) Close() error {
+	r.term <- struct{}{}
+	return r.base.Close()
 }
 
 // Consume uses the provided Consumer and reads messages from Kafka in a separate
@@ -377,7 +546,7 @@ func Consume(consumer *kafka.Consumer, handler MessageHandler, errCb ErrorCallba
 			case <-termChan:
 				return
 			default:
-				msg, err := consumer.ReadMessage(time.Second * 10)
+				msg, err := consumer.ReadMessage(DefaultPollTimeout)
 				if err != nil {
 					if errCb != nil {
 						errCb(err)

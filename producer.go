@@ -21,7 +21,7 @@ type ProducerOptions struct {
 	// a required field. A zero value (nil) will cause a panic.
 	ValueMarshaller MarshallFunc
 	// Allows plugging in a third party Logger. By default, the Logger from the
-	// standard library will be used if one is not provided.
+	// standard library will be used if one is not provided at INFO level.
 	Logger Logger
 }
 

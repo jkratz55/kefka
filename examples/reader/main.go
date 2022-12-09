@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 
@@ -15,7 +16,6 @@ func main() {
 	}
 
 	topic := "test"
-
 	opts := kefka.ReaderOptions{
 		KafkaConfig: config,
 		MessageHandler: kefka.MessageHandlerFunc(func(msg *kafka.Message, ack kefka.Commit) {
@@ -30,12 +30,32 @@ func main() {
 		TopicPartitions: []kafka.TopicPartition{
 			{
 				Topic:     &topic,
-				Partition: 1,
-				Offset:    323800,
+				Partition: 0,
+				Offset:    kefka.FirstOffset,
 			},
 		},
 	}
 
-	err := kefka.ReadTopicPartitions(context.Background(), opts)
-	fmt.Println(err)
+	reader, err := kefka.NewReader(opts)
+	if err != nil {
+		panic(err)
+	}
+
+	go reader.Read()
+
+	time.Sleep(10 * time.Second)
+	reader.Close()
+	time.Sleep(10 * time.Second)
+
+	fmt.Println("Use ReadTopicPartitions function")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		err := kefka.ReadTopicPartitions(ctx, opts)
+		if err != nil {
+			panic(err)
+		}
+	}()
+
+	time.Sleep(10 * time.Second)
+	cancel()
 }
