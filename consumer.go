@@ -258,6 +258,11 @@ func (c *Consumer) readMessage() {
 	if err != nil {
 		switch e := err.(type) {
 		case kafka.Error:
+			if e.Code() == kafka.ErrTimedOut {
+				// Ignore if timeout polling from Kafka. This is expected if there
+				// are no new events/messages.
+				return
+			}
 			c.logger.Printf(ErrorLevel, "error polling from Kafka: %s Code: %d", e.Error(), e.Code())
 		default:
 			c.logger.Printf(ErrorLevel, "error polling from Kafka: %s", err)

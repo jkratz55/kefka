@@ -73,7 +73,7 @@ func main() {
 				// after librdkafka exhausted all retries. Application level retries
 				// are not recommended here since the client is already configured
 				// to retry.
-				if ev.TopicPartition.Error != nil {
+				if ev.TopicPartition.Error == nil {
 					logger.Info(fmt.Sprintf("Successfully delivered message to Topic %s, Partition %d Offset %d",
 						*ev.TopicPartition.Topic, ev.TopicPartition.Partition, ev.TopicPartition.Offset))
 				} else {
