@@ -15,6 +15,16 @@ const (
 	DefaultPollTimeout = time.Second * 10
 )
 
+type kafkaConsumer interface {
+	MetadataClient
+	Assignment() (partitions []kafka.TopicPartition, err error)
+	Close() error
+	Commit() ([]kafka.TopicPartition, error)
+	Poll(timeoutMs int) (event kafka.Event)
+	ReadMessage(timeout time.Duration) (*kafka.Message, error)
+	Subscribe(topic string, rebalanceCb kafka.RebalanceCb) error
+}
+
 // ErrorCallback is a function that is invoked with an error value when an error
 // occurs processing messages from Kafka.
 type ErrorCallback func(err error)
@@ -108,7 +118,7 @@ type ConsumerOptions struct {
 // want to commit offsets back to Kafka. If auto commits are on the Commit function
 // can be ignored. In fact, it should not be called at all if using auto commits.
 type Consumer struct {
-	baseConsumer *kafka.Consumer
+	baseConsumer kafkaConsumer
 	handler      MessageHandler
 	pollTimeout  time.Duration
 	errorHandler ErrorCallback
@@ -449,7 +459,7 @@ func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
 //	enable.auto.commit -> false
 //	group.id -> kefkareader
 type Reader struct {
-	base            *kafka.Consumer
+	base            kafkaConsumer
 	handler         MessageHandler
 	errorCb         ErrorCallback
 	partitionEOFCb  PartitionEOFCallback
