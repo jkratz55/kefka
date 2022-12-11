@@ -8,6 +8,15 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
+// kafkaProducer is an interface type that only exists to make unit testing a
+// possibility since we need to mock the concrete kafka producer type.
+type kafkaProducer interface {
+	Close()
+	Events() chan kafka.Event
+	Flush(timeoutMs int) int
+	Produce(msg *kafka.Message, deliveryChan chan kafka.Event) error
+}
+
 // ProducerOptions is a type containing all the configuration options to instantiate
 // and initialize a Producer.
 type ProducerOptions struct {
@@ -34,7 +43,7 @@ type ProducerOptions struct {
 // The zero-value is not usable and a Producer should be instantiated with the
 // NewProducer function.
 type Producer struct {
-	baseProducer    *kafka.Producer
+	baseProducer    kafkaProducer
 	keyMarshaller   MarshallFunc
 	valueMarshaller MarshallFunc
 	logger          Logger

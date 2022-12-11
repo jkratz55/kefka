@@ -16,7 +16,7 @@ import (
 // timeout. However, it is very important to note this does not cancel producing
 // the message. It simply cancels waiting on the delivery report. The message still
 // may be delivered.
-func SyncProduce(ctx context.Context, p *kafka.Producer, topic string, key, value []byte) error {
+func SyncProduce(ctx context.Context, p kafkaProducer, topic string, key, value []byte) error {
 	ch := make(chan kafka.Event, 1)
 	err := p.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{
@@ -51,7 +51,7 @@ func SyncProduce(ctx context.Context, p *kafka.Producer, topic string, key, valu
 // timeout. However, it is very important to note this does not cancel producing
 // the message. It simply cancels waiting on the delivery report. The message still
 // may be delivered.
-func SyncProduceMessage(ctx context.Context, p *kafka.Producer, msg *kafka.Message) error {
+func SyncProduceMessage(ctx context.Context, p kafkaProducer, msg *kafka.Message) error {
 	ch := make(chan kafka.Event, 1)
 	err := p.Produce(msg, ch)
 	if err != nil {
@@ -75,7 +75,7 @@ func SyncProduceMessage(ctx context.Context, p *kafka.Producer, msg *kafka.Messa
 //
 // This function is blocking and should really only be called if you need to
 // force the internal queue empty. An example might be an application exiting.
-func FlushAll(p *kafka.Producer) {
+func FlushAll(p kafkaProducer) {
 	for remaining := p.Flush(5000); remaining > 0; {
 		// keep calling flush until it returns 0 elements remaining
 	}
