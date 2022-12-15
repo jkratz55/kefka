@@ -33,13 +33,16 @@ type ErrorCallback func(err error)
 //
 // Implementations of MessageHandler are expected to perform all processing and
 // business logic around the received message. Implementations of MessageHandler
-// should handle any and all retry logic, error handling, etc.
+// should handle any and all retry logic, error handling, etc. A MessageHandler
+// can return an error but the error is ignored by the underlying Consumer and
+// Reader types. However, it does allow a MessageHandler to be wrapped to handle
+// errors and retries in an elegant way.
 //
 // Implementations of MessageHandler should call the Commit function when using
 // manual/synchronous commits with Kafka. Otherwise, it should not be called as
 // it can have negative impacts on throughput/performance.
 type MessageHandler interface {
-	Handle(msg *kafka.Message, ack Commit)
+	Handle(msg *kafka.Message, ack Commit) error
 }
 
 // MessageHandlerFunc is a convenient way to satisfy the MessageHandler interface
@@ -291,7 +294,7 @@ func (c *Consumer) readMessage() {
 		}
 	}
 	start := time.Now()
-	c.handler.Handle(msg, ack)
+	_ = c.handler.Handle(msg, ack) // Consumer doesn't care if the handler returns an error
 	c.logger.Printf(DebugLevel, "Executed MessageHandler for message with offset %d, topic %s partition %d in %d seconds",
 		msg.TopicPartition.Offset, *msg.TopicPartition.Topic, msg.TopicPartition.Partition, time.Since(start).Seconds())
 }
@@ -415,7 +418,7 @@ func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
 				// Even if the handler some reason calls commit it won't have any
 				// effect.
 				msg := e.(*kafka.Message)
-				opts.MessageHandler.Handle(msg, nopCommit)
+				_ = opts.MessageHandler.Handle(msg, nopCommit)
 			case kafka.Error:
 				// If an error callback was registered it will be called with the
 				// error. Otherwise, we drop the error on the floor and move on.
@@ -566,7 +569,7 @@ func (r *Reader) Read() {
 				// Even if the handler some reason calls commit it won't have any
 				// effect.
 				msg := e.(*kafka.Message)
-				r.handler.Handle(msg, nopCommit)
+				_ = r.handler.Handle(msg, nopCommit)
 			case kafka.Error:
 				// If an error callback was registered it will be called with the
 				// error. Otherwise, we drop the error on the floor and move on.
@@ -635,7 +638,7 @@ func Consume(consumer *kafka.Consumer, handler MessageHandler, errCb ErrorCallba
 						errCb(err)
 					}
 				}
-				handler.Handle(msg, ack)
+				_ = handler.Handle(msg, ack)
 			}
 		}
 	}()
