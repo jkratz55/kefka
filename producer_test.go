@@ -203,6 +203,12 @@ func TestProducer_SyncProduceMessage(t *testing.T) {
 	producer, err := NewProducer(opts)
 	assert.NoError(t, err)
 
+	eventChan := make(chan kafka.Event, 1)
+	baseProducer := new(producerMock)
+	baseProducer.On("Events").Return(eventChan)
+	baseProducer.On("Produce", mock.Anything, mock.Anything).Return(nil)
+	producer.baseProducer = baseProducer // replace internal Kafka Producer with mock
+
 	topic := "test"
 	err = producer.SyncProduceMessage(context.Background(), &kafka.Message{
 		TopicPartition: kafka.TopicPartition{

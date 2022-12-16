@@ -17,7 +17,7 @@ type sampleMessageHandler struct {
 	counter int
 }
 
-func (s *sampleMessageHandler) Handle(msg *kafka.Message, ack kefka.Commit) {
+func (s *sampleMessageHandler) Handle(msg *kafka.Message, ack kefka.Commit) error {
 	s.counter++
 	fmt.Println(msg.TopicPartition.Offset)
 
@@ -28,6 +28,7 @@ func (s *sampleMessageHandler) Handle(msg *kafka.Message, ack kefka.Commit) {
 	// to commit on a time interval, or every X messages, or a combo of both.
 	// IMPORTANT: DON'T CALL ack if you are using automatic commits, let the client
 	// handle it for you automatically.
+	return nil
 }
 
 func main() {

@@ -18,7 +18,7 @@ func main() {
 	topic := "test"
 	opts := kefka.ReaderOptions{
 		KafkaConfig: config,
-		MessageHandler: kefka.MessageHandlerFunc(func(msg *kafka.Message, ack kefka.Commit) {
+		MessageHandler: kefka.MessageHandlerFunc(func(msg *kafka.Message, ack kefka.Commit) error {
 			// Here we are just printing the offset of the message but this is
 			// where the logic would go to handle the message... save to database,
 			// trigger some action, etc.
@@ -26,6 +26,7 @@ func main() {
 			// cases you'll likely want to implement your own type and include retries
 			// and more robust error handling
 			fmt.Println(msg.TopicPartition.Offset)
+			return nil
 		}),
 		ErrorCallback: func(err error) {
 			// This callback gives the caller the oppertunity to log errors or

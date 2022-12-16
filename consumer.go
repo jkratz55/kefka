@@ -49,10 +49,10 @@ type MessageHandler interface {
 // without creating a type.
 //
 // See MessageHandler for more details.
-type MessageHandlerFunc func(msg *kafka.Message, ack Commit)
+type MessageHandlerFunc func(msg *kafka.Message, ack Commit) error
 
-func (m MessageHandlerFunc) Handle(msg *kafka.Message, ack Commit) {
-	m(msg, ack)
+func (m MessageHandlerFunc) Handle(msg *kafka.Message, ack Commit) error {
+	return m(msg, ack)
 }
 
 // CancelFunc is a function used to cancel Consumer operations
