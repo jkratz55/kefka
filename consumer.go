@@ -20,6 +20,7 @@ type kafkaConsumer interface {
 	Assignment() (partitions []kafka.TopicPartition, err error)
 	Close() error
 	Commit() ([]kafka.TopicPartition, error)
+	Logs() chan kafka.LogEvent
 	Poll(timeoutMs int) (event kafka.Event)
 	ReadMessage(timeout time.Duration) (*kafka.Message, error)
 	Subscribe(topic string, rebalanceCb kafka.RebalanceCb) error
@@ -164,6 +165,9 @@ func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
 		opts.Logger = defaultLogger()
 	}
 
+	// Always override logging config to prevent logs from being sent to stderr/stdout
+	_ = opts.KafkaConfig.SetKey("go.logs.channel.enable", true)
+
 	baseConsumer, err := kafka.NewConsumer(opts.KafkaConfig)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create Confluent Kafka Consumer with provided config: %w", err)
@@ -198,6 +202,13 @@ func (c *Consumer) Consume() {
 		return
 	}
 	c.running = true
+
+	go func() {
+		for log := range c.baseConsumer.Logs() {
+			c.logger.Printf(InfoLevel, "[%s]-[%s] %s", log.Name, log.Tag, log.Message)
+		}
+	}()
+
 	for {
 		select {
 		case <-c.termCh:
@@ -499,6 +510,9 @@ func NewReader(opts ReaderOptions) (*Reader, error) {
 	_ = opts.KafkaConfig.SetKey("enable.auto.commit", false)
 	_ = opts.KafkaConfig.SetKey("group.id", "kefkareader")
 
+	// Always override logging config to prevent logs from being sent to stderr/stdout
+	_ = opts.KafkaConfig.SetKey("go.logs.channel.enable", true)
+
 	// Use default poll timeout if one wasn't provided
 	if opts.PollTimeout == 0 {
 		opts.PollTimeout = DefaultPollTimeout
@@ -557,6 +571,13 @@ func (r *Reader) QueryWatermarkOffsets() map[string]OffsetWatermarks {
 //
 // This method should never be called more than once.
 func (r *Reader) Read() {
+
+	go func() {
+		for log := range r.base.Logs() {
+			r.logger.Printf(InfoLevel, "[%s]-[%s] %s", log.Name, log.Tag, log.Message)
+		}
+	}()
+
 	for {
 		select {
 		case <-r.term:
