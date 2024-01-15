@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
-
-	"github.com/jkratz55/kefka"
 )
 
 func main() {

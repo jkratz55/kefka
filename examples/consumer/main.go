@@ -9,8 +9,6 @@ import (
 	"syscall"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
-
-	"github.com/jkratz55/kefka"
 )
 
 type sampleMessageHandler struct {

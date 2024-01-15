@@ -11,8 +11,6 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-
-	"github.com/jkratz55/kefka"
 )
 
 type order struct {
