@@ -5,7 +5,7 @@ Kefka is a simple library that wraps the official Confluent Go Kafka library. My
 Kefka is named after Kefka Palazzo, the main antagonist of the critically acclaimed video game Final Fantasy VI. 
 
 <p align="center">
-<img src="misc/80-ffvi37_181.png">
+<img src=".resources/80-ffvi37_181.png">
 </p>
 
 ## Usage

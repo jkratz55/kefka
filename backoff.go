@@ -5,11 +5,15 @@ import (
 	"time"
 )
 
-var random = rand.New(rand.NewSource(time.Now().UnixNano()))
-
 type Backoff interface {
-	Next() time.Duration
+	Delay() time.Duration
 }
+
+var (
+	random = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	defaultBackoff = ExponentialBackoff(200*time.Millisecond, 3*time.Second)
+)
 
 func ConstantBackoff(dur time.Duration) Backoff {
 	return constantBackoff{dur}
@@ -19,7 +23,7 @@ type constantBackoff struct {
 	dur time.Duration
 }
 
-func (c constantBackoff) Next() time.Duration {
+func (c constantBackoff) Delay() time.Duration {
 	return c.dur
 }
 
@@ -35,7 +39,7 @@ type exponentialBackoff struct {
 	max time.Duration
 }
 
-func (e *exponentialBackoff) Next() time.Duration {
+func (e *exponentialBackoff) Delay() time.Duration {
 	next := e.dur
 
 	maxJitter := e.dur / 4
@@ -45,21 +49,4 @@ func (e *exponentialBackoff) Next() time.Duration {
 		e.dur = e.max
 	}
 	return next
-}
-
-func RandomBackoff(min, max time.Duration) Backoff {
-	if max < min {
-		panic("max must be greater than min")
-	}
-	return &randomBackoff{min, max}
-}
-
-type randomBackoff struct {
-	min time.Duration
-	max time.Duration
-}
-
-func (r randomBackoff) Next() time.Duration {
-	durRange := r.max - r.min
-	return r.min + time.Duration(random.Int63n(int64(durRange)))
 }
