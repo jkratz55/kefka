@@ -60,7 +60,11 @@ func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
 	}
 
 	msg := m.Message()
-	return m.producer.producer.Produce(msg, deliveryChan)
+	err := m.producer.producer.Produce(msg, deliveryChan)
+	if err != nil {
+		return fmt.Errorf("kafka: enqueue message: %w", err)
+	}
+	return nil
 }
 
 // SendAndWait produces a message to Kafka and waits for the delivery report.
@@ -73,7 +77,7 @@ func (m *MessageBuilder) SendAndWait() error {
 
 	err := m.Send(deliveryChan)
 	if err != nil {
-		return err
+		return fmt.Errorf("kafka: enqueue message: %w", err)
 	}
 
 	e := <-deliveryChan

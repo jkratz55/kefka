@@ -11,6 +11,7 @@ type DeadLetterOpts struct {
 
 type DeadLetterHandler struct {
 	next Handler
+	opts DeadLetterOpts
 }
 
 func (d *DeadLetterHandler) Handle(message *kafka.Message) error {
@@ -20,4 +21,10 @@ func (d *DeadLetterHandler) Handle(message *kafka.Message) error {
 	}
 
 	return nil
+}
+
+func DeadLetter(opts DeadLetterOpts) HandlerMiddleware {
+	return func(next Handler) Handler {
+		return &DeadLetterHandler{next: next}
+	}
 }

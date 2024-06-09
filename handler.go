@@ -14,3 +14,14 @@ type HandlerFunc func(msg *kafka.Message) error
 func (f HandlerFunc) Handle(msg *kafka.Message) error {
 	return f(msg)
 }
+
+type HandlerMiddleware func(h Handler) Handler
+
+func ChainHandlers(hs ...HandlerMiddleware) HandlerMiddleware {
+	return func(next Handler) Handler {
+		for i := len(hs) - 1; i >= 0; i-- {
+			next = hs[i](next)
+		}
+		return next
+	}
+}

@@ -10,7 +10,7 @@ import (
 
 // Retry is a middleware for a Handler that retries processing a message when
 // a Handler returns an error.
-func Retry(opts RetryOpts) func(h Handler) Handler {
+func Retry(opts RetryOpts) HandlerMiddleware {
 	if opts.Backoff == nil {
 		opts.Backoff = defaultBackoff
 	}

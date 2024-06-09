@@ -3,8 +3,6 @@ package kefka
 import (
 	"log/slog"
 	"time"
-
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
 const (
@@ -22,13 +20,13 @@ type Config struct {
 	// Kafka. This is a required field.
 	//
 	// Applies To: Consumer, Producer
-	BootstrapServers []string `env:"KAFKA_BOOTSTRAP_SERVERS"`
+	BootstrapServers []string `env:"KAFKA_BOOTSTRAP_SERVERS" json:"bootstrapServers" yaml:"bootstrapServers"`
 
 	// The ID of the consumer group to join. This is a required field when using
 	// Consumer.
 	//
 	// Applies To: Consumer
-	GroupID string `env:"KAFKA_CONSUMER_GROUP_ID"`
+	GroupID string `env:"KAFKA_CONSUMER_GROUP_ID" json:"groupId" yaml:"groupId"`
 
 	// Client group session and failure detection timeout. The consumer sends
 	// periodic heartbeats to indicate its liveness to the broker. If no heart
@@ -39,13 +37,13 @@ type Config struct {
 	// The unit is milliseconds with a default of 45000 (45 seconds).
 	//
 	// Applies To: Consumer
-	SessionTimeout time.Duration `env:"KAFKA_CONSUMER_SESSION_TIMEOUT, default=45s"`
+	SessionTimeout time.Duration `env:"KAFKA_CONSUMER_SESSION_TIMEOUT, default=45s" json:"sessionTimeout" yaml:"sessionTimeout"`
 
 	// Interval at which the consumer sends heartbeats to the broker. The default
 	// is 3000 (3 seconds).
 	//
 	// Applies To: Consumer
-	HeartbeatInterval time.Duration `env:"KAFKA_CONSUMER_HEARTBEAT_INTERVAL, default=3s"`
+	HeartbeatInterval time.Duration `env:"KAFKA_CONSUMER_HEARTBEAT_INTERVAL, default=3s" json:"heartbeatInterval" yaml:"heartbeatInterval"`
 
 	// The interval between committing offsets back to Kafka brokers. The default
 	// is 5000ms (5 seconds). When set to -1 the offsets will be commited after
@@ -55,7 +53,7 @@ type Config struct {
 	// not recommended.
 	//
 	// Applies To: Consumer
-	CommitInterval time.Duration `env:"KAFKA_CONSUMER_COMMIT_INTERVAL, default=5s"`
+	CommitInterval time.Duration `env:"KAFKA_CONSUMER_COMMIT_INTERVAL, default=5s" json:"commitInterval" yaml:"commitInterval"`
 
 	// Configures the behavior when there are no stored offsets found for the
 	// Consumer group for topic/partition.
@@ -64,65 +62,65 @@ type Config struct {
 	// from the latest message in the topic/partition.
 	//
 	// Applies To: Consumer
-	AutoOffsetReset AutoOffsetReset `env:"KAFKA_CONSUMER_AUTO_OFFSET_RESET, default=latest"`
+	AutoOffsetReset AutoOffsetReset `env:"KAFKA_CONSUMER_AUTO_OFFSET_RESET, default=latest" json:"autoOffsetReset" yaml:"autoOffsetReset"`
 
 	// The maximum size for a message. The default is 1048576 (1MB).
 	//
 	// Applies To: Consumer, Producer
-	MessageMaxBytes int `env:"KAFKA_MAX_BYTES, default=1048576"`
+	MessageMaxBytes int `env:"KAFKA_MAX_BYTES, default=1048576" json:"messageMaxBytes" yaml:"messageMaxBytes"`
 
 	// Maximum amount of data the broker shall return for a Fetch request. Messages
 	// are fetched in batches by the consumer. The default is 52428800 (50MB).
 	//
 	// Applies To: Consumer
-	MaxFetchBytes int `env:"KAFKA_MAX_FETCH_BYTES, default=52428800"`
+	MaxFetchBytes int `env:"KAFKA_MAX_FETCH_BYTES, default=52428800" json:"maxFetchBytes" yaml:"maxFetchBytes"`
 
 	// The security protocol used to communicate with the brokers.
 	//
 	// Valid values are: plaintext, ssl, sasl_plaintext, sasl_ssl.
 	//
 	// Applies To: Consumer, Producer
-	SecurityProtocol SecurityProtocol `env:"KAFKA_SECURITY_PROTOCOL, default=plaintext"`
+	SecurityProtocol SecurityProtocol `env:"KAFKA_SECURITY_PROTOCOL, default=plaintext" json:"securityProtocol" yaml:"securityProtocol"`
 
 	// The location of the certificate authority file used to verify the brokers.
 	//
 	// Applies To: Consumer, Producer
-	CertificateAuthorityLocation string `env:"KAFKA_CA_LOCATION"`
+	CertificateAuthorityLocation string `env:"KAFKA_CA_LOCATION" json:"certificateAuthorityLocation" yaml:"certificateAuthorityLocation"`
 
 	// The location of the client certificate used to authenticate with the brokers.
 	//
 	// Applies To: Consumer, Producer
-	CertificateLocation string `env:"KAFKA_CERT_LOCATION"`
+	CertificateLocation string `env:"KAFKA_CERT_LOCATION" json:"certificateLocation" yaml:"certificateLocation"`
 
 	// The location of the key for the client certificate.
 	//
 	// Applies To: Consumer, Producer
-	CertificateKeyLocation string `env:"KAFKA_CERT_KEY_LOCATION"`
+	CertificateKeyLocation string `env:"KAFKA_CERT_KEY_LOCATION" json:"certificateKeyLocation" yaml:"certificateKeyLocation"`
 
 	// The password for the key used for the client certificate.
 	//
 	// Applies To: Consumer, Producer
-	CertificateKeyPassword string `env:"KAFKA_CERT_KEY_PASSWORD"`
+	CertificateKeyPassword string `env:"KAFKA_CERT_KEY_PASSWORD" json:"certificateKeyPassword" yaml:"certificateKeyPassword"`
 
 	// Skip TLS verification when using SSL or SASL_SSL.
 	//
 	// Applies To: Consumer, Producer
-	SkipTlsVerification bool `env:"KAFKA_SKIP_TLS_VERIFICATION, default=false"`
+	SkipTlsVerification bool `env:"KAFKA_SKIP_TLS_VERIFICATION, default=false" json:"skipTlsVerification" yaml:"skipTlsVerification"`
 
 	// The SASL mechanism to use for SASL authentication.
 	//
 	// Applies To: Consumer, Producer
-	SASLMechanism SaslMechanism `env:"KAFKA_SASL_MECHANISM"`
+	SASLMechanism SaslMechanism `env:"KAFKA_SASL_MECHANISM" json:"saslMechanism" yaml:"saslMechanism"`
 
 	// The username for authenticating with SASL.
 	//
 	// Applies To: Consumer, Producer
-	SASLUsername string `env:"KAFKA_SASL_USER"`
+	SASLUsername string `env:"KAFKA_SASL_USER" json:"saslUsername" yaml:"saslUsername"`
 
 	// The password for authenticating with SASL.
 	//
 	// Applies To: Consumer, Producer
-	SASLPassword string `env:"KAFKA_SASL_PASSWORD"`
+	SASLPassword string `env:"KAFKA_SASL_PASSWORD" json:"saslPassword" yaml:"saslPassword"`
 
 	// The number of acknowledgements the producer requires the leader to have
 	// received before considering a request complete. The default value is
@@ -130,7 +128,7 @@ type Config struct {
 	// before proceeding.
 	//
 	// Applies To: Producer
-	RequiredAcks Ack `env:"KAFKA_PRODUCER_REQUIRED_ACKS, default=all"`
+	RequiredAcks Ack `env:"KAFKA_PRODUCER_REQUIRED_ACKS, default=all" json:"requiredAcks" yaml:"requiredAcks"`
 
 	// When set to `true`, the producer will ensure that messages are successfully
 	// produced exactly once and in the original produce order.
@@ -142,7 +140,7 @@ type Config struct {
 	// configuration is incompatible.
 	//
 	// Applies To: Producer
-	Idempotence bool `env:"KAFKA_PRODUCER_IDEMPOTENCE, default=false"`
+	Idempotence bool `env:"KAFKA_PRODUCER_IDEMPOTENCE, default=false" json:"idempotence" yaml:"idempotence"`
 
 	// Configures the logger used by the Consumer and Producer types.
 	//
@@ -160,8 +158,8 @@ type Config struct {
 	// a Kafka error. This can be useful for logging errors or capturing metrics.
 	// The default value is nil and won't be called.
 	//
-	// Applies To: Consumer
-	OnError func(kafka.Error)
+	// Applies To: Consumer, Producer
+	OnError func(err error)
 }
 
 func (c *Config) init() {
