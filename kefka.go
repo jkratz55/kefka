@@ -13,6 +13,8 @@ const (
 	defaultCommitInterval    = time.Second * 5
 	defaultOffsetReset       = Latest
 	defaultRequiredAcks      = AckAll
+	defaultSecurityProtocol  = Plaintext
+	defaultPollTimeout       = time.Millisecond * 100
 )
 
 type Config struct {
@@ -54,6 +56,9 @@ type Config struct {
 	//
 	// Applies To: Consumer
 	CommitInterval time.Duration `env:"KAFKA_CONSUMER_COMMIT_INTERVAL, default=5s" json:"commitInterval" yaml:"commitInterval"`
+
+	//
+	PollTimeout time.Duration `env:"KAFKA_CONSUMER_POLL_TIMEOUT, default=100ms" json:"pollTimeout" yaml:"pollTimeout"`
 
 	// Configures the behavior when there are no stored offsets found for the
 	// Consumer group for topic/partition.
@@ -183,6 +188,12 @@ func (c *Config) init() {
 	}
 	if c.RequiredAcks == "" {
 		c.RequiredAcks = defaultRequiredAcks
+	}
+	if c.SecurityProtocol == "" {
+		c.SecurityProtocol = Plaintext
+	}
+	if c.PollTimeout == 0 {
+		c.PollTimeout = defaultPollTimeout
 	}
 	if c.Logger == nil {
 		c.Logger = DefaultLogger()

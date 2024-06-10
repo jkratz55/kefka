@@ -12,11 +12,11 @@ import (
 
 type Producer struct {
 	producer       *kafka.Producer
-	closed         bool
 	loggerStopChan chan struct{}
 	eventStopChan  chan struct{}
 }
 
+// NewProducer creates and initializes a new Kafka Producer.
 func NewProducer(conf Config) (*Producer, error) {
 
 	// Set any default configuration values not present
@@ -108,7 +108,6 @@ func NewProducer(conf Config) (*Producer, error) {
 
 	return &Producer{
 		producer:       producer,
-		closed:         false,
 		eventStopChan:  eventStopChan,
 		loggerStopChan: loggerStopChan,
 	}, nil
@@ -187,6 +186,12 @@ func (p *Producer) Transactional(ctx context.Context, msgs []*kafka.Message) err
 	return nil
 }
 
+// Len returns the number of messages and requests waiting to be transmitted to
+// the broker as well as delivery reports queued for the application.
+func (p *Producer) Len() int {
+	return p.producer.Len()
+}
+
 func (p *Producer) Flush(timeout time.Duration) int {
 	return p.producer.Flush(int(timeout.Milliseconds()))
 }
@@ -195,6 +200,10 @@ func (p *Producer) Close() {
 	p.producer.Close()
 	p.eventStopChan <- struct{}{}  // Stop reading from event loop
 	p.loggerStopChan <- struct{}{} // Stop reading logs from librdkafka
+}
+
+func (p *Producer) IsClosed() bool {
+	return p.producer.IsClosed()
 }
 
 func producerConfigMap(conf Config) *kafka.ConfigMap {
@@ -207,7 +216,7 @@ func producerConfigMap(conf Config) *kafka.ConfigMap {
 		"enable.idempotence":                 conf.Idempotence,
 		"request.required.acks":              conf.RequiredAcks.value(),
 		"topic.metadata.refresh.interval.ms": 300000,
-		"connection.max.idle.ms":             600000,
+		"connections.max.idle.ms":            600000,
 	}
 
 	// If SSL is enabled any additional SSL configuration provided needs added

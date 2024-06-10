@@ -5,8 +5,6 @@ import (
 	"fmt"
 )
 
-// todo: Correct unmarshal codes, add YAML support, consistent error messages
-
 type SaslMechanism string
 
 const (
