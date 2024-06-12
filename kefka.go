@@ -1,8 +1,14 @@
 package kefka
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/sethvargo/go-envconfig"
 )
 
 const (
@@ -22,7 +28,7 @@ type Config struct {
 	// Kafka. This is a required field.
 	//
 	// Applies To: Consumer, Producer
-	BootstrapServers []string `env:"KAFKA_BOOTSTRAP_SERVERS" json:"bootstrapServers" yaml:"bootstrapServers"`
+	BootstrapServers []string `env:"KAFKA_BOOTSTRAP_SERVERS, required" json:"bootstrapServers" yaml:"bootstrapServers"`
 
 	// The ID of the consumer group to join. This is a required field when using
 	// Consumer.
@@ -115,7 +121,7 @@ type Config struct {
 	// The SASL mechanism to use for SASL authentication.
 	//
 	// Applies To: Consumer, Producer
-	SASLMechanism SaslMechanism `env:"KAFKA_SASL_MECHANISM" json:"saslMechanism" yaml:"saslMechanism"`
+	SASLMechanism SaslMechanism `env:"KAFKA_SASL_MECHANISM, default=PLAIN" json:"saslMechanism" yaml:"saslMechanism"`
 
 	// The username for authenticating with SASL.
 	//
@@ -190,12 +196,35 @@ func (c *Config) init() {
 		c.RequiredAcks = defaultRequiredAcks
 	}
 	if c.SecurityProtocol == "" {
-		c.SecurityProtocol = Plaintext
+		c.SecurityProtocol = defaultSecurityProtocol
 	}
 	if c.PollTimeout == 0 {
 		c.PollTimeout = defaultPollTimeout
 	}
 	if c.Logger == nil {
 		c.Logger = DefaultLogger()
+	}
+}
+
+// LoadConfigFromEnv loads the configuration from the environment and returns
+// an instance of Config populated from the environment.
+func LoadConfigFromEnv() (Config, error) {
+	var c Config
+	if err := envconfig.Process(context.Background(), &c); err != nil {
+		return Config{}, fmt.Errorf("failed to load config from env: %w", err)
+	}
+	c.init()
+	c.Logger = DefaultLogger()
+	return c, nil
+}
+
+func printConfigMap(cm *kafka.ConfigMap) {
+	fmt.Println("Kafka Config:")
+	for key, value := range *cm {
+		if strings.Contains(key, "password") {
+			fmt.Printf("\t%s: %s\n", key, "********")
+		} else {
+			fmt.Printf("\t%s: %s\n", key, value)
+		}
 	}
 }

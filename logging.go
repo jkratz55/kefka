@@ -17,9 +17,9 @@ func NopLogger() *slog.Logger {
 func DefaultLogger() *slog.Logger {
 	leveler := new(slog.LevelVar)
 	leveler.Set(slog.LevelError)
-
-	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		AddSource: true,
 		Level:     leveler,
-	}))
+	})
+	return slog.New(handler)
 }

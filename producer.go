@@ -118,6 +118,7 @@ func (p *Producer) M() *MessageBuilder {
 }
 
 func (p *Producer) Produce(m *kafka.Message, deliveryChan chan kafka.Event) error {
+	m.TopicPartition.Partition = kafka.PartitionAny
 	return p.producer.Produce(m, deliveryChan)
 }
 
@@ -125,6 +126,7 @@ func (p *Producer) ProduceAndWait(m *kafka.Message) error {
 	deliveryChan := make(chan kafka.Event)
 	defer close(deliveryChan)
 
+	m.TopicPartition.Partition = kafka.PartitionAny
 	err := p.producer.Produce(m, deliveryChan)
 	if err != nil {
 		return err

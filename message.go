@@ -100,7 +100,8 @@ func (m *MessageBuilder) SendAndWait() error {
 func (m *MessageBuilder) Message() *kafka.Message {
 	msg := &kafka.Message{
 		TopicPartition: kafka.TopicPartition{
-			Topic: &m.topic,
+			Topic:     &m.topic,
+			Partition: kafka.PartitionAny,
 		},
 		Value:  m.value,
 		Opaque: m.opaque,
