@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"time"
 
@@ -173,6 +174,8 @@ type Config struct {
 	OnError func(err error)
 }
 
+// init initializes the configuration with default values when the zero value
+// is present on the type.
 func (c *Config) init() {
 	if c.SessionTimeout == 0 {
 		c.SessionTimeout = defaultSessionTimeout
@@ -214,10 +217,18 @@ func LoadConfigFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("failed to load config from env: %w", err)
 	}
 	c.init()
+
+	// Because the way envconfig works, we need to set the logger after calling
+	// init() to ensure it has a valid logger. Because the way interfaces work
+	// in Go and nil checks the nil check for the logger done in init will always
+	// be true but the internal handler for slog.Logger will be nil leading to
+	// runtime panics.
 	c.Logger = DefaultLogger()
 	return c, nil
 }
 
+// producerConfigMap prints the Kafka configuration to stdout for debugging
+// while obfuscating any password fields.
 func printConfigMap(cm *kafka.ConfigMap) {
 	fmt.Println("Kafka Config:")
 	for key, value := range *cm {
@@ -227,4 +238,25 @@ func printConfigMap(cm *kafka.ConfigMap) {
 			fmt.Printf("\t%s: %s\n", key, value)
 		}
 	}
+}
+
+// obfuscateConfig returns a copy of the ConfigMap with any password fields
+// or non-serializable fields obfuscated. This is for internal use only to
+// log the configuration used to initialize the kafka client.
+func obfuscateConfig(c *kafka.ConfigMap) map[string]interface{} {
+	obfuscated := make(map[string]interface{})
+	for k, v := range *c {
+		switch reflect.TypeOf(v).Kind() {
+		case reflect.Chan:
+			// Channels are not serializable, so we skip them
+			continue
+		default:
+			if strings.Contains(k, "password") {
+				obfuscated[k] = "********"
+			} else {
+				obfuscated[k] = v
+			}
+		}
+	}
+	return obfuscated
 }

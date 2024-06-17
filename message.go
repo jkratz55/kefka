@@ -9,6 +9,8 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
+// MessageBuilder represents a Kafka message and provides a fluent API for
+// constructing a message to be produced to Kafka.
 type MessageBuilder struct {
 	producer *Producer
 	topic    string
@@ -19,21 +21,26 @@ type MessageBuilder struct {
 	err      error
 }
 
+// Topic sets the topic for the message.
 func (m *MessageBuilder) Topic(t string) *MessageBuilder {
 	m.topic = t
 	return m
 }
 
+// Key sets the key for the message.
 func (m *MessageBuilder) Key(k string) *MessageBuilder {
 	m.key = k
 	return m
 }
 
+// Value sets the value for the message.
 func (m *MessageBuilder) Value(v []byte) *MessageBuilder {
 	m.value = v
 	return m
 }
 
+// JSON serializes the provided value to JSON and sets it as the value for the
+// message.
 func (m *MessageBuilder) JSON(v any) *MessageBuilder {
 	data, err := json.Marshal(v)
 	m.err = err
@@ -41,16 +48,22 @@ func (m *MessageBuilder) JSON(v any) *MessageBuilder {
 	return m
 }
 
+// Header adds a header to the message.
 func (m *MessageBuilder) Header(key string, value []byte) *MessageBuilder {
 	m.headers = append(m.headers, Header{Key: key, Value: value})
 	return m
 }
 
+// Opaque sets the opaque value for the message.
 func (m *MessageBuilder) Opaque(o interface{}) *MessageBuilder {
 	m.opaque = o
 	return m
 }
 
+// Send produces a message to Kafka asynchronously and returns immediately if
+// the message was enqueued successfully, otherwise returns an error. The delivery
+// report is delivered on the provided channel. If the channel is nil than Send
+// operates as fire-and-forget.
 func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
 	if m.err != nil {
 		return m.err
@@ -59,8 +72,12 @@ func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
 		return errors.New("invalid message: no topic")
 	}
 
-	msg := m.Message()
-	err := m.producer.producer.Produce(msg, deliveryChan)
+	msg, err := m.Message()
+	if err != nil {
+		return fmt.Errorf("kafka: build message: %w", err)
+	}
+
+	err = m.producer.producer.Produce(msg, deliveryChan)
 	if err != nil {
 		return fmt.Errorf("kafka: enqueue message: %w", err)
 	}
@@ -97,7 +114,10 @@ func (m *MessageBuilder) SendAndWait() error {
 
 // Message builds and returns a *kafka.Message instance from the Confluent Kafka
 // library.
-func (m *MessageBuilder) Message() *kafka.Message {
+func (m *MessageBuilder) Message() (*kafka.Message, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
 	msg := &kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic:     &m.topic,
@@ -121,9 +141,16 @@ func (m *MessageBuilder) Message() *kafka.Message {
 		msg.Headers = headers
 	}
 
-	return msg
+	return msg, nil
 }
 
+// Err returns the last error that occurred while building the message or nil
+// if there were no errors.
+func (m *MessageBuilder) Err() error {
+	return m.err
+}
+
+// Header represents a Kafka message header.
 type Header struct {
 	Key   string
 	Value []byte

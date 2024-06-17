@@ -65,7 +65,10 @@ func NewConsumer(conf Config, handler Handler, topic string) (*Consumer, error) 
 	go func(logger *slog.Logger) {
 		for {
 			select {
-			case logEvent := <-logChan:
+			case logEvent, ok := <-logChan:
+				if !ok {
+					return
+				}
 				logger.Debug(logEvent.Message,
 					slog.Group("librdkafka",
 						slog.String("name", logEvent.Name),
@@ -86,6 +89,8 @@ func NewConsumer(conf Config, handler Handler, topic string) (*Consumer, error) 
 	if ok, _ := strconv.ParseBool(os.Getenv("KEFKA_DEBUG")); ok {
 		printConfigMap(configMap)
 	}
+	conf.Logger.Info("Initializing Kafka Consumer",
+		slog.Any("config", obfuscateConfig(configMap)))
 
 	base, err := kafka.NewConsumer(configMap)
 	if err != nil {

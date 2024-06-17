@@ -37,7 +37,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	for i := 0; i < 1000000; i++ {
+	for i := 0; i < 1000; i++ {
 		key := uuid.New().String()
 		err := producer.M().
 			Topic("test").
@@ -52,7 +52,7 @@ func main() {
 		}
 	}
 
-	for i := 0; i < 10000; i++ {
+	for i := 0; i < 10000000; i++ {
 		key := uuid.New().String()
 		err := producer.M().
 			Topic("test").
@@ -67,8 +67,10 @@ func main() {
 		}
 	}
 
-	producer.Flush(time.Second * 10)
-	time.Sleep(5 * time.Second)
+	for x := producer.Flush(10 * time.Second); x > 0; x = producer.Flush(10 * time.Second) {
+		logger.Debug("Waiting for messages to be sent",
+			slog.Int("count", x))
+	}
 	producer.Close()
 	time.Sleep(5 * time.Second)
 }

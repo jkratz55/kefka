@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +51,14 @@ func NewProducer(conf Config) (*Producer, error) {
 	// Configure logs from librdkafka to be sent to our logger rather than stdout
 	_ = configMap.SetKey("go.logs.channel.enable", true)
 	_ = configMap.SetKey("go.logs.channel", logChan)
+
+	// If KEFKA_DEBUG is enabled print the Kafka configuration to stdout for
+	// debugging/troubleshooting purposes.
+	if ok, _ := strconv.ParseBool(os.Getenv("KEFKA_DEBUG")); ok {
+		printConfigMap(configMap)
+	}
+	conf.Logger.Info("Initializing Kafka Producer",
+		slog.Any("config", obfuscateConfig(configMap)))
 
 	producer, err := kafka.NewProducer(configMap)
 	if err != nil {
