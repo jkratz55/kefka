@@ -1,0 +1,9 @@
+build:
+	go mod tidy
+	go build ./...
+
+test:
+	go test ./...
+
+test-full:
+	export TEST_CONTAINERS_ENABLED=1 && go test ./...

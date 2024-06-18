@@ -13,7 +13,7 @@ import (
 )
 
 type Producer struct {
-	producer       *kafka.Producer
+	base           *kafka.Producer
 	loggerStopChan chan struct{}
 	eventStopChan  chan struct{}
 }
@@ -36,7 +36,10 @@ func NewProducer(conf Config) (*Producer, error) {
 	go func(logger *slog.Logger) {
 		for {
 			select {
-			case logEvent := <-logChan:
+			case logEvent, ok := <-logChan:
+				if !ok {
+					return
+				}
 				logger.Debug(logEvent.Message,
 					slog.Group("librdkafka",
 						slog.String("name", logEvent.Name),
@@ -117,7 +120,7 @@ func NewProducer(conf Config) (*Producer, error) {
 	}(conf.Logger)
 
 	return &Producer{
-		producer:       producer,
+		base:           producer,
 		eventStopChan:  eventStopChan,
 		loggerStopChan: loggerStopChan,
 	}, nil
@@ -129,7 +132,7 @@ func (p *Producer) M() *MessageBuilder {
 
 func (p *Producer) Produce(m *kafka.Message, deliveryChan chan kafka.Event) error {
 	m.TopicPartition.Partition = kafka.PartitionAny
-	return p.producer.Produce(m, deliveryChan)
+	return p.base.Produce(m, deliveryChan)
 }
 
 func (p *Producer) ProduceAndWait(m *kafka.Message) error {
@@ -137,7 +140,7 @@ func (p *Producer) ProduceAndWait(m *kafka.Message) error {
 	defer close(deliveryChan)
 
 	m.TopicPartition.Partition = kafka.PartitionAny
-	err := p.producer.Produce(m, deliveryChan)
+	err := p.base.Produce(m, deliveryChan)
 	if err != nil {
 		return err
 	}
@@ -158,30 +161,30 @@ func (p *Producer) ProduceAndWait(m *kafka.Message) error {
 }
 
 func (p *Producer) Transactional(ctx context.Context, msgs []*kafka.Message) error {
-	if err := p.producer.InitTransactions(ctx); err != nil {
+	if err := p.base.InitTransactions(ctx); err != nil {
 		return fmt.Errorf("kafka: failed to initialize transactions: %w", err)
 	}
 
-	err := p.producer.BeginTransaction()
+	err := p.base.BeginTransaction()
 	deliveryChan := make(chan kafka.Event, len(msgs))
 
 	for i := 0; i < len(msgs); i++ {
-		err = p.producer.Produce(msgs[i], deliveryChan)
+		err = p.base.Produce(msgs[i], deliveryChan)
 		if err != nil {
-			abortErr := p.producer.AbortTransaction(ctx)
+			abortErr := p.base.AbortTransaction(ctx)
 			if abortErr != nil {
 				return fmt.Errorf("kafka: failed to abort transaction: %w: failed to produce message: %w", abortErr, err)
 			}
 			return err
 		}
 	}
-	close(deliveryChan)
 
-	for event := range deliveryChan {
+	for i := 0; i < len(msgs); i++ {
+		event := <-deliveryChan
 		switch ev := event.(type) {
 		case *kafka.Message:
 			if ev.TopicPartition.Error != nil {
-				abortErr := p.producer.AbortTransaction(ctx)
+				abortErr := p.base.AbortTransaction(ctx)
 				if abortErr != nil {
 					return fmt.Errorf("kafka: failed to abort transaction: %w: message delivery failed: %w", abortErr, ev.TopicPartition.Error)
 				}
@@ -189,8 +192,9 @@ func (p *Producer) Transactional(ctx context.Context, msgs []*kafka.Message) err
 			}
 		}
 	}
+	close(deliveryChan)
 
-	err = p.producer.CommitTransaction(ctx)
+	err = p.base.CommitTransaction(ctx)
 	if err != nil {
 		return fmt.Errorf("kafka: failed to commit transaction: %w", err)
 	}
@@ -201,21 +205,21 @@ func (p *Producer) Transactional(ctx context.Context, msgs []*kafka.Message) err
 // Len returns the number of messages and requests waiting to be transmitted to
 // the broker as well as delivery reports queued for the application.
 func (p *Producer) Len() int {
-	return p.producer.Len()
+	return p.base.Len()
 }
 
 func (p *Producer) Flush(timeout time.Duration) int {
-	return p.producer.Flush(int(timeout.Milliseconds()))
+	return p.base.Flush(int(timeout.Milliseconds()))
 }
 
 func (p *Producer) Close() {
-	p.producer.Close()
 	p.eventStopChan <- struct{}{}  // Stop reading from event loop
 	p.loggerStopChan <- struct{}{} // Stop reading logs from librdkafka
+	p.base.Close()
 }
 
 func (p *Producer) IsClosed() bool {
-	return p.producer.IsClosed()
+	return p.base.IsClosed()
 }
 
 func producerConfigMap(conf Config) *kafka.ConfigMap {
@@ -229,6 +233,10 @@ func producerConfigMap(conf Config) *kafka.ConfigMap {
 		"request.required.acks":              conf.RequiredAcks.value(),
 		"topic.metadata.refresh.interval.ms": 300000,
 		"connections.max.idle.ms":            600000,
+	}
+
+	if conf.TransactionID != "" {
+		_ = configMap.SetKey("transactional.id", conf.TransactionID)
 	}
 
 	// If SSL is enabled any additional SSL configuration provided needs added

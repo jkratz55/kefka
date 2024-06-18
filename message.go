@@ -77,7 +77,7 @@ func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
 		return fmt.Errorf("kafka: build message: %w", err)
 	}
 
-	err = m.producer.producer.Produce(msg, deliveryChan)
+	err = m.producer.base.Produce(msg, deliveryChan)
 	if err != nil {
 		return fmt.Errorf("kafka: enqueue message: %w", err)
 	}

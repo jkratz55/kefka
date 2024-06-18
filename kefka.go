@@ -154,6 +154,13 @@ type Config struct {
 	// Applies To: Producer
 	Idempotence bool `env:"KAFKA_PRODUCER_IDEMPOTENCE, default=false" json:"idempotence" yaml:"idempotence"`
 
+	// The transactional ID to use for messages produced by the producer. This
+	// is used to ensure that messages are produced atomically and in order. This
+	// is required when using transactions.
+	//
+	// Applies To: Producer
+	TransactionID string `env:"KAFKA_PRODUCER_TRANSACTION_ID" json:"transactionId" yaml:"transactionId"`
+
 	// Configures the logger used by the Consumer and Producer types.
 	//
 	// When nil a default logger will be used that logs to os.Stderr at ERROR
