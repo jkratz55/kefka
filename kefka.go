@@ -17,6 +17,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const version = "2.0.0"
+
 const (
 	defaultMessageMaxBytes   = 1048576  // 1MiB
 	defaultMaxFetchBytes     = 52428800 // 50MiB
