@@ -87,6 +87,7 @@ func (d *DeadLetterHandler) Handle(message *kafka.Message) error {
 			if d.opts.OnPublishError != nil {
 				d.opts.OnPublishError(message, err)
 			}
+			return fmt.Errorf("failed to publish message to dead letter topic: %w", err)
 		} else {
 			d.opts.Logger.Info("Successfully published message to dead letter topic",
 				slog.Group("deadLetterMessage",

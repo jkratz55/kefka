@@ -8,23 +8,7 @@ import (
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 )
-
-type mockHandler struct {
-	mock.Mock
-
-	attempts int
-}
-
-func (m *mockHandler) Handle(msg *kafka.Message) error {
-	m.attempts++
-	args := m.Called(msg)
-	if args.Error(0) != nil {
-		return args.Error(0)
-	}
-	return nil
-}
 
 func TestRetryHandler_Handle(t *testing.T) {
 	topic := "test"
