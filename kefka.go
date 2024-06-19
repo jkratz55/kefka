@@ -2,14 +2,19 @@ package kefka
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/sethvargo/go-envconfig"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -232,6 +237,37 @@ func LoadConfigFromEnv() (Config, error) {
 	// runtime panics.
 	c.Logger = DefaultLogger()
 	return c, nil
+}
+
+func LoadConfigFromFile(fp string) (Config, error) {
+	file, err := os.Open(fp)
+	if err != nil {
+		return Config{}, fmt.Errorf("failed to open file: %w", err)
+	}
+
+	contents, err := io.ReadAll(file)
+	if err != nil {
+		return Config{}, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var conf Config
+	ext := filepath.Ext(fp)
+	switch ext {
+	case ".json":
+		err := json.Unmarshal(contents, &conf)
+		if err != nil {
+			return Config{}, fmt.Errorf("failed to unmarshal json: %w", err)
+		}
+		return conf, nil
+	case ".yaml":
+		err := yaml.Unmarshal(contents, &conf)
+		if err != nil {
+			return Config{}, fmt.Errorf("failed to unmarshal yaml: %w", err)
+		}
+		return conf, nil
+	default:
+		return Config{}, fmt.Errorf("unsupported file type: %s", ext)
+	}
 }
 
 // producerConfigMap prints the Kafka configuration to stdout for debugging
