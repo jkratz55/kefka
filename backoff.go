@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// Backoff is a type that provides a delay (backoff) duration between operations.
 type Backoff interface {
 	Delay() time.Duration
 }
@@ -15,6 +16,7 @@ var (
 	defaultBackoff = ExponentialBackoff(200*time.Millisecond, 3*time.Second)
 )
 
+// ConstantBackoff returns a Backoff that delays a constant duration between operations.
 func ConstantBackoff(dur time.Duration) Backoff {
 	return constantBackoff{dur}
 }
@@ -27,6 +29,8 @@ func (c constantBackoff) Delay() time.Duration {
 	return c.dur
 }
 
+// ExponentialBackoff returns a Backoff that delays an exponentially increasing
+// duration between operations up to the maxDelay.
 func ExponentialBackoff(initialDelay, maxDelay time.Duration) Backoff {
 	if maxDelay < initialDelay {
 		panic("maxDelay must be greater than initialDelay")

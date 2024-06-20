@@ -9,6 +9,7 @@ import (
 	"github.com/jkratz55/kefka/v2/internal"
 )
 
+// initKafkaTestContainer initializes a new Kafka test container.
 func initKafkaTestContainer(ctx context.Context) (*internal.KafkaContainer, error) {
 	return internal.RunContainer(ctx,
 		testKafka.WithClusterID("test-cluster"),

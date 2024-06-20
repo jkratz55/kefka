@@ -7,13 +7,30 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
+// DeadLetterOpts is a struct that contains the configuration options for
+// the DeadLetterHandler.
 type DeadLetterOpts struct {
-	Producer       *Producer
-	Topic          string
-	Logger         *slog.Logger
+
+	// The Producer instance that will be used to publish messages to the dead
+	// letter topic.
+	Producer *Producer
+
+	// The topic that the DeadLetterHandler will publish messages to if the
+	// next handler in the chain returns an error.
+	Topic string
+
+	// The logger that will be used to log messages when the DeadLetterHandler.
+	// The default logger is used if the zero-value is provided.
+	Logger *slog.Logger
+
+	// The callback that will be invoked if publishing to the dead letter topic
+	// fails. This can be used to store the message to disk, db, etc.
 	OnPublishError func(msg *kafka.Message, err error)
 }
 
+// DeadLetter is a middleware for a Handler that will publish the message consumed
+// from Kafka to a dead letter topic if the handler returns an error. This can be
+// useful to store messages to be retried later or to be analyzed for debugging.
 func DeadLetter(opts DeadLetterOpts) HandlerMiddleware {
 	if opts.Producer == nil {
 		panic("DeadLetterOpts.Producer is required")
@@ -33,6 +50,9 @@ func DeadLetter(opts DeadLetterOpts) HandlerMiddleware {
 	}
 }
 
+// DeadLetterHandler is an implementation of the Handler interface that will
+// publish the message to a dead letter topic if the handler fails to process
+// them.
 type DeadLetterHandler struct {
 	next Handler
 	opts DeadLetterOpts

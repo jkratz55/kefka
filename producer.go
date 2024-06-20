@@ -27,6 +27,7 @@ type baseProducer interface {
 
 var _ baseProducer = &kafka.Producer{}
 
+// Producer is a high-level type for producing messages to Kafka.
 type Producer struct {
 	base           baseProducer
 	loggerStopChan chan struct{}
@@ -144,10 +145,16 @@ func NewProducer(conf Config) (*Producer, error) {
 	}, nil
 }
 
+// M returns a MessageBuilder that provides a fluent API for building and sending
+// a message.
 func (p *Producer) M() *MessageBuilder {
 	return &MessageBuilder{producer: p}
 }
 
+// Produce produces a message to Kafka asynchronously and returns immediately if
+// the message was enqueued successfully, otherwise returns an error. The delivery
+// report is delivered on the provided channel. If the channel is nil than Produce
+// operates as fire-and-forget.
 func (p *Producer) Produce(m *kafka.Message, deliveryChan chan kafka.Event) error {
 	m.TopicPartition.Partition = kafka.PartitionAny
 	err := p.base.Produce(m, deliveryChan)
@@ -158,6 +165,10 @@ func (p *Producer) Produce(m *kafka.Message, deliveryChan chan kafka.Event) erro
 	return err
 }
 
+// ProduceAndWait produces a message to Kafka and waits for the delivery report.
+//
+// This method is blocking and will wait until the delivery report is received
+// from Kafka. This allows for producing messages synchronously.
 func (p *Producer) ProduceAndWait(m *kafka.Message) error {
 	deliveryChan := make(chan kafka.Event)
 	defer close(deliveryChan)
@@ -186,6 +197,8 @@ func (p *Producer) ProduceAndWait(m *kafka.Message) error {
 	return nil
 }
 
+// Transactional sends a batch of messages as a single transaction. If any messages
+// fail to be produced the transaction will be aborted and an error will be returned.
 func (p *Producer) Transactional(ctx context.Context, msgs []*kafka.Message) error {
 	if err := p.base.InitTransactions(ctx); err != nil {
 		return fmt.Errorf("kafka: failed to initialize transactions: %w", err)
@@ -238,16 +251,22 @@ func (p *Producer) Len() int {
 	return p.base.Len()
 }
 
+// Flush and wait for outstanding messages and requests to complete delivery. Runs
+// until value reaches zero or timeout is exceeded. Returns the number of outstanding
+// events still un-flushed.
 func (p *Producer) Flush(timeout time.Duration) int {
 	return p.base.Flush(int(timeout.Milliseconds()))
 }
 
+// Close stops the producer and releases any resources. A Producer is not usable
+// after this method is called.
 func (p *Producer) Close() {
 	p.eventStopChan <- struct{}{}  // Stop reading from event loop
 	p.loggerStopChan <- struct{}{} // Stop reading logs from librdkafka
 	p.base.Close()
 }
 
+// IsClosed returns true if the producer has been closed, otherwise false.
 func (p *Producer) IsClosed() bool {
 	return p.base.IsClosed()
 }

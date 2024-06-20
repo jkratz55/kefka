@@ -59,6 +59,7 @@ func init() {
 		Subsystem: "consumer",
 		Name:      "handler_duration_seconds",
 		Help:      "Duration of time for a handler to process a message",
+		Buckets:   prometheus.ExponentialBuckets(0.001, 2, 10),
 	}, []string{"topic", "status"})
 	consumerKafkaErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "kefka",
@@ -71,7 +72,7 @@ func init() {
 		Subsystem: "consumer",
 		Name:      "offsets_commited",
 		Help:      "Number of times offsets commited by the consumer",
-	}, []string{"topic"})
+	}, []string{"topic", "partition"})
 	consumerRebalances = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "kefka",
 		Subsystem: "consumer",
@@ -83,13 +84,13 @@ func init() {
 		Subsystem: "consumer",
 		Name:      "store_offset_errors",
 		Help:      "Number of errors that occurred while storing offsets",
-	}, []string{"topic"})
+	}, []string{"topic", "partition"})
 	consumerCommitOffsetErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "kefka",
 		Subsystem: "consumer",
 		Name:      "commit_offset_errors",
 		Help:      "Number of errors that occurred while committing offsets",
-	}, []string{"topic"})
+	}, []string{"topic", "partition"})
 	producerMessagesEnqueued = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "kefka",
 		Subsystem: "producer",

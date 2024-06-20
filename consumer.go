@@ -33,6 +33,18 @@ type baseConsumer interface {
 // Ensures that the kafka.Consumer implements all methods defined by the baseConsumer interface.
 var _ baseConsumer = &kafka.Consumer{}
 
+// Consumer is a type that provides a high-level API for consuming messages from
+// Kafka.
+//
+// Consumer is a thin abstraction over the official Confluent Kafka Go client
+// and provides a simplified API for consuming messages from Kafka. The Consumer
+// invokes a Handler for each message received from Kafka that processes the
+// message. Regardless of the outcome of the Handler, the Consumer will store/commit
+// the offsets back to the brokers and continue processing events/messages. Any
+// retry logic or error handling should be implemented in the Handler or by wrapping
+// a Handler using middleware/decorators. Kefka provides Retry and DeadLetter middleware
+// that can be used to implement retry logic and dead letter queues. Since Handler
+// an interface, it is easy to implement custom middleware to extend the functionality.
 type Consumer struct {
 	base               baseConsumer
 	handler            Handler
@@ -46,6 +58,7 @@ type Consumer struct {
 	stopChan           chan struct{}
 }
 
+// NewConsumer creates and initializes a new Kafka Consumer.
 func NewConsumer(conf Config, handler Handler, topic string) (*Consumer, error) {
 	if handler == nil {
 		return nil, errors.New("invalid config: cannot initialize Consumer with nil Handler")
@@ -113,6 +126,11 @@ func NewConsumer(conf Config, handler Handler, topic string) (*Consumer, error) 
 	return consumer, nil
 }
 
+// Run starts polling events from Kafka and consuming/processing messages. Run
+// is blocking and will continue to run until the Consumer is closed or encounters
+// a fatal error. In almost all use cases Run should be invoked in a new goroutine.
+// If the Consumer is gracefully closed Run should return a nil error value, unless
+// it fails to commit offsets or close the underlying Confluent Kafka client.
 func (c *Consumer) Run() error {
 
 	// Try to acquire the lock to ensure Run cannot be invoked more than once on
@@ -185,6 +203,10 @@ func (c *Consumer) Run() error {
 	return closeErr
 }
 
+// handleError handles error events returned by Kafka
+//
+// handleError will simply log and increment metrics for non-fatal error but will
+// propagate fatal errors to the caller.
 func (c *Consumer) handleError(err kafka.Error) error {
 	consumerKafkaErrors.WithLabelValues(err.Code().String()).Inc()
 	// If an error callback is provided invoke it with the error
@@ -208,6 +230,7 @@ func (c *Consumer) handleError(err kafka.Error) error {
 	return nil
 }
 
+// handleMessage handles messages received from Kafka.
 func (c *Consumer) handleMessage(msg *kafka.Message) {
 	start := time.Now()
 	err := c.handler.Handle(msg)
@@ -229,7 +252,9 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 	if c.commitEveryMessage {
 		_, err := c.base.CommitMessage(msg)
 		if err != nil {
-			consumerStoreOffsetErrors.WithLabelValues(*msg.TopicPartition.Topic).Inc()
+			consumerCommitOffsetErrors.
+				WithLabelValues(*msg.TopicPartition.Topic, strconv.Itoa(int(msg.TopicPartition.Partition))).
+				Inc()
 			// If an error callback is provided invoke it with the error
 			if c.conf.OnError != nil {
 				c.conf.OnError(err)
@@ -240,7 +265,9 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 	} else {
 		_, err := c.base.StoreMessage(msg)
 		if err != nil {
-			consumerStoreOffsetErrors.WithLabelValues(*msg.TopicPartition.Topic).Inc()
+			consumerStoreOffsetErrors.
+				WithLabelValues(*msg.TopicPartition.Topic, strconv.Itoa(int(msg.TopicPartition.Partition))).
+				Inc()
 			// If an error callback is provided invoke it with the error
 			if c.conf.OnError != nil {
 				c.conf.OnError(err)
@@ -251,10 +278,11 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 	}
 }
 
+// handleOffsetsCommitted handles offsets committed events returned by Kafka
 func (c *Consumer) handleOffsetsCommitted(offsets kafka.OffsetsCommitted) {
 	for _, tp := range offsets.Offsets {
 		if tp.Error != nil {
-			consumerCommitOffsetErrors.WithLabelValues(*tp.Topic).Inc()
+			consumerCommitOffsetErrors.WithLabelValues(*tp.Topic, strconv.Itoa(int(tp.Partition))).Inc()
 			if c.conf.OnError != nil {
 				c.conf.OnError(tp.Error)
 			}
@@ -264,7 +292,7 @@ func (c *Consumer) handleOffsetsCommitted(offsets kafka.OffsetsCommitted) {
 				slog.Int("partition", int(tp.Partition)),
 				slog.Int64("offset", int64(tp.Offset)))
 		} else {
-			consumerOffsetsCommited.WithLabelValues(*tp.Topic).Inc()
+			consumerOffsetsCommited.WithLabelValues(*tp.Topic, strconv.Itoa(int(tp.Partition))).Inc()
 			c.logger.Debug("Successfully committed offset to Kafka brokers",
 				slog.String("topic", *tp.Topic),
 				slog.Int("partition", int(tp.Partition)),
@@ -273,10 +301,12 @@ func (c *Consumer) handleOffsetsCommitted(offsets kafka.OffsetsCommitted) {
 	}
 }
 
+// Assignment returns the current partition assignments for the Consumer.
 func (c *Consumer) Assignment() (kafka.TopicPartitions, error) {
 	return c.base.Assignment()
 }
 
+// Subscription returns the topics the Consumer is currently subscribed to.
 func (c *Consumer) Subscription() ([]string, error) {
 	return c.base.Subscription()
 }
@@ -294,6 +324,8 @@ func (c *Consumer) Position() ([]kafka.TopicPartition, error) {
 	return c.base.Position(topicPartitions)
 }
 
+// Lag returns the current lag for each partition assigned to the Consumer
+// represented as a map topic|partition -> lag.
 func (c *Consumer) Lag() (map[string]int64, error) {
 	lags := make(map[string]int64)
 
@@ -329,23 +361,30 @@ func (c *Consumer) Lag() (map[string]int64, error) {
 	return lags, nil
 }
 
+// Commit commits the current offsets for the Consumer.
 func (c *Consumer) Commit() error {
 	_, err := c.base.Commit()
 	return err
 }
 
+// Close gracefully closes the Consumer and releases any resources. After Close
+// is called the Consumer cannot be reused.
 func (c *Consumer) Close() {
 	c.running = false
 }
 
+// IsRunning returns true if the Consumer is currently running, otherwise false.
 func (c *Consumer) IsRunning() bool {
 	return c.running
 }
 
+// IsClosed returns true if the Consumer is closed, otherwise false.
 func (c *Consumer) IsClosed() bool {
 	return c.base.IsClosed()
 }
 
+// rebalanceCb is a callback function that is invoked when Kafka rebalances the
+// group. This callback is only used for logging and metrics purposes.
 func (c *Consumer) rebalanceCb(_ *kafka.Consumer, event kafka.Event) error {
 	consumerRebalances.WithLabelValues(c.topic).Inc()
 	switch e := event.(type) {
@@ -360,6 +399,8 @@ func (c *Consumer) rebalanceCb(_ *kafka.Consumer, event kafka.Event) error {
 	return nil
 }
 
+// consumerConfigMap maps the configuration to the ConfigMap the Confluent Kafka
+// Go client expects.
 func consumerConfigMap(conf Config) *kafka.ConfigMap {
 	// Configure base properties/parameters
 	configMap := &kafka.ConfigMap{
