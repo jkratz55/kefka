@@ -142,81 +142,28 @@ func (c *Consumer) Run() error {
 		rawEvent := c.base.Poll(c.pollTimeout)
 
 		switch event := rawEvent.(type) {
-
 		case kafka.Error:
-			// If an error callback is provided invoke it with the error
-			if c.conf.OnError != nil {
-				c.conf.OnError(event)
+
+			// Handle the error event polled from Kafka. The handleError method
+			// will only bubble up an error if Confluent Kafka Go/librdkafka client
+			// returns a fatal error indicating the Consumer cannot continue. In this
+			// case the consumer attempts to commit the offsets back to Kafka, but it
+			// is unlikely to succeed. The Consumer is then closed and the error is
+			// bubbled up to the caller to indicate the Consumer has unexpectedly
+			// stopped due to a fatal error and cannot continue.
+			if err := c.handleError(event); err != nil {
+				c.running = false
+				_, _ = c.base.Commit()
+				_ = c.base.Close()
+				c.stopChan <- struct{}{}
+				return err
 			}
-			c.logger.Error("Kafka returned an error while polling for events",
-				slog.String("err", event.Error()),
-				slog.Int("code", int(event.Code())),
-				slog.Bool("fatal", event.IsFatal()),
-				slog.Bool("retryable", event.IsRetriable()),
-				slog.Bool("timeout", event.IsTimeout()))
 
 		case *kafka.Message:
-			err := c.handler.Handle(event)
-			if err != nil {
-				c.logger.Error("Failed to process message: handler returned a error",
-					slog.String("err", err.Error()),
-					slog.String("topic", *event.TopicPartition.Topic),
-					slog.Int("partition", int(event.TopicPartition.Partition)),
-					slog.Int64("offset", int64(event.TopicPartition.Offset)),
-					slog.String("key", string(event.Key)))
-			}
-
-			// If the Consumer is configured to commit offsets after every message
-			// commit the offset for the message. Otherwise, the offset is stored
-			// and the offsets are committed based on the configured commit interval.
-			if c.commitEveryMessage {
-				_, err := c.base.CommitMessage(event)
-				if err != nil {
-					// If an error callback is provided invoke it with the error
-					if c.conf.OnError != nil {
-						c.conf.OnError(err)
-					}
-					c.logger.Error("Failed to commit offset for message",
-						slog.String("err", err.Error()),
-						slog.String("topic", *event.TopicPartition.Topic),
-						slog.Int("partition", int(event.TopicPartition.Partition)),
-						slog.Int64("offset", int64(event.TopicPartition.Offset)),
-						slog.String("key", string(event.Key)))
-				}
-			} else {
-				_, err := c.base.StoreMessage(event)
-				if err != nil {
-					// If an error callback is provided invoke it with the error
-					if c.conf.OnError != nil {
-						c.conf.OnError(err)
-					}
-					c.logger.Error("Failed to acknowledge message and store offsets",
-						slog.String("err", err.Error()),
-						slog.String("topic", *event.TopicPartition.Topic),
-						slog.Int("partition", int(event.TopicPartition.Partition)),
-						slog.Int64("offset", int64(event.TopicPartition.Offset)),
-						slog.String("key", string(event.Key)))
-				}
-			}
+			c.handleMessage(event)
 
 		case kafka.OffsetsCommitted:
-			for _, tp := range event.Offsets {
-				if tp.Error != nil {
-					if c.conf.OnError != nil {
-						c.conf.OnError(err)
-					}
-					c.logger.Error("Failed to commit offset to Kafka brokers",
-						slog.String("err", tp.Error.Error()),
-						slog.String("topic", *tp.Topic),
-						slog.Int("partition", int(tp.Partition)),
-						slog.Int64("offset", int64(tp.Offset)))
-				} else {
-					c.logger.Debug("Successfully committed offset to Kafka brokers",
-						slog.String("topic", *tp.Topic),
-						slog.Int("partition", int(tp.Partition)),
-						slog.Int64("offset", int64(tp.Offset)))
-				}
-			}
+			c.handleOffsetsCommitted(event)
 		}
 	}
 
@@ -235,6 +182,81 @@ func (c *Consumer) Run() error {
 	// Signal to the goroutine processing logs to stop
 	c.stopChan <- struct{}{}
 	return closeErr
+}
+
+func (c *Consumer) handleError(err kafka.Error) error {
+	// If an error callback is provided invoke it with the error
+	if c.conf.OnError != nil {
+		c.conf.OnError(err)
+	}
+	c.logger.Error("Kafka returned an error while polling for events",
+		slog.String("err", err.Error()),
+		slog.Int("code", int(err.Code())),
+		slog.Bool("fatal", err.IsFatal()),
+		slog.Bool("retryable", err.IsRetriable()),
+		slog.Bool("timeout", err.IsTimeout()))
+
+	// If the error is fatal there is no point in continuing to run the Consumer.
+	// An error is bubbled up to the caller to indicate to the Consumer has stopped
+	// due to a fatal error.
+	if err.IsFatal() {
+		return fmt.Errorf("kafka client fatal error: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Consumer) handleMessage(msg *kafka.Message) {
+	err := c.handler.Handle(msg)
+	if err != nil {
+		c.logger.Error("Failed to process message: handler returned a error",
+			consumerSlogAttrs(msg, err)...)
+	}
+
+	// If the Consumer is configured to commit offsets after every message
+	// commit the offset for the message. Otherwise, the offset is stored
+	// and the offsets are committed based on the configured commit interval.
+	if c.commitEveryMessage {
+		_, err := c.base.CommitMessage(msg)
+		if err != nil {
+			// If an error callback is provided invoke it with the error
+			if c.conf.OnError != nil {
+				c.conf.OnError(err)
+			}
+			c.logger.Error("Failed to commit offset for message",
+				consumerSlogAttrs(msg, err)...)
+		}
+	} else {
+		_, err := c.base.StoreMessage(msg)
+		if err != nil {
+			// If an error callback is provided invoke it with the error
+			if c.conf.OnError != nil {
+				c.conf.OnError(err)
+			}
+			c.logger.Error("Failed to acknowledge message and store offsets",
+				consumerSlogAttrs(msg, err)...)
+		}
+	}
+}
+
+func (c *Consumer) handleOffsetsCommitted(offsets kafka.OffsetsCommitted) {
+	for _, tp := range offsets.Offsets {
+		if tp.Error != nil {
+			if c.conf.OnError != nil {
+				c.conf.OnError(tp.Error)
+			}
+			c.logger.Error("Failed to commit offset to Kafka brokers",
+				slog.String("err", tp.Error.Error()),
+				slog.String("topic", *tp.Topic),
+				slog.Int("partition", int(tp.Partition)),
+				slog.Int64("offset", int64(tp.Offset)))
+		} else {
+			c.logger.Debug("Successfully committed offset to Kafka brokers",
+				slog.String("topic", *tp.Topic),
+				slog.Int("partition", int(tp.Partition)),
+				slog.Int64("offset", int64(tp.Offset)))
+		}
+	}
 }
 
 func (c *Consumer) Assignment() (kafka.TopicPartitions, error) {
@@ -369,4 +391,14 @@ func consumerConfigMap(conf Config) *kafka.ConfigMap {
 	}
 
 	return configMap
+}
+
+func consumerSlogAttrs(msg *kafka.Message, err error) []any {
+	return []any{
+		slog.String("err", err.Error()),
+		slog.String("topic", *msg.TopicPartition.Topic),
+		slog.Int("partition", int(msg.TopicPartition.Partition)),
+		slog.Int64("offset", int64(msg.TopicPartition.Offset)),
+		slog.String("key", string(msg.Key)),
+	}
 }

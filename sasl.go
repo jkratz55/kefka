@@ -3,6 +3,7 @@ package kefka
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type SaslMechanism string
@@ -58,7 +59,7 @@ func (sm *SaslMechanism) String() string {
 }
 
 func ParseSaslMechanism(s string) (SaslMechanism, error) {
-	switch s {
+	switch strings.ToUpper(s) {
 	case "PLAIN":
 		return Plain, nil
 	case "GSSAPI":

@@ -36,13 +36,13 @@ type Config struct {
 	// Kafka. This is a required field.
 	//
 	// Applies To: Consumer, Producer
-	BootstrapServers []string `env:"KAFKA_BOOTSTRAP_SERVERS, required" json:"bootstrapServers" yaml:"bootstrapServers"`
+	BootstrapServers []string `env:"KAFKA_BOOTSTRAP_SERVERS, required"`
 
 	// The ID of the consumer group to join. This is a required field when using
 	// Consumer.
 	//
 	// Applies To: Consumer
-	GroupID string `env:"KAFKA_CONSUMER_GROUP_ID" json:"groupId" yaml:"groupId"`
+	GroupID string `env:"KAFKA_CONSUMER_GROUP_ID"`
 
 	// Client group session and failure detection timeout. The consumer sends
 	// periodic heartbeats to indicate its liveness to the broker. If no heart
@@ -53,13 +53,13 @@ type Config struct {
 	// The unit is milliseconds with a default of 45000 (45 seconds).
 	//
 	// Applies To: Consumer
-	SessionTimeout time.Duration `env:"KAFKA_CONSUMER_SESSION_TIMEOUT, default=45s" json:"sessionTimeout" yaml:"sessionTimeout"`
+	SessionTimeout time.Duration `env:"KAFKA_CONSUMER_SESSION_TIMEOUT, default=45s"`
 
 	// Interval at which the consumer sends heartbeats to the broker. The default
 	// is 3000 (3 seconds).
 	//
 	// Applies To: Consumer
-	HeartbeatInterval time.Duration `env:"KAFKA_CONSUMER_HEARTBEAT_INTERVAL, default=3s" json:"heartbeatInterval" yaml:"heartbeatInterval"`
+	HeartbeatInterval time.Duration `env:"KAFKA_CONSUMER_HEARTBEAT_INTERVAL, default=3s"`
 
 	// The interval between committing offsets back to Kafka brokers. The default
 	// is 5000ms (5 seconds). When set to -1 the offsets will be commited after
@@ -69,10 +69,10 @@ type Config struct {
 	// not recommended.
 	//
 	// Applies To: Consumer
-	CommitInterval time.Duration `env:"KAFKA_CONSUMER_COMMIT_INTERVAL, default=5s" json:"commitInterval" yaml:"commitInterval"`
+	CommitInterval time.Duration `env:"KAFKA_CONSUMER_COMMIT_INTERVAL, default=5s"`
 
 	//
-	PollTimeout time.Duration `env:"KAFKA_CONSUMER_POLL_TIMEOUT, default=100ms" json:"pollTimeout" yaml:"pollTimeout"`
+	PollTimeout time.Duration `env:"KAFKA_CONSUMER_POLL_TIMEOUT, default=100ms"`
 
 	// Configures the behavior when there are no stored offsets found for the
 	// Consumer group for topic/partition.
@@ -81,65 +81,65 @@ type Config struct {
 	// from the latest message in the topic/partition.
 	//
 	// Applies To: Consumer
-	AutoOffsetReset AutoOffsetReset `env:"KAFKA_CONSUMER_AUTO_OFFSET_RESET, default=latest" json:"autoOffsetReset" yaml:"autoOffsetReset"`
+	AutoOffsetReset AutoOffsetReset `env:"KAFKA_CONSUMER_AUTO_OFFSET_RESET, default=latest"`
 
 	// The maximum size for a message. The default is 1048576 (1MB).
 	//
 	// Applies To: Consumer, Producer
-	MessageMaxBytes int `env:"KAFKA_MAX_BYTES, default=1048576" json:"messageMaxBytes" yaml:"messageMaxBytes"`
+	MessageMaxBytes int `env:"KAFKA_MAX_BYTES, default=1048576"`
 
 	// Maximum amount of data the broker shall return for a Fetch request. Messages
 	// are fetched in batches by the consumer. The default is 52428800 (50MB).
 	//
 	// Applies To: Consumer
-	MaxFetchBytes int `env:"KAFKA_MAX_FETCH_BYTES, default=52428800" json:"maxFetchBytes" yaml:"maxFetchBytes"`
+	MaxFetchBytes int `env:"KAFKA_MAX_FETCH_BYTES, default=52428800"`
 
 	// The security protocol used to communicate with the brokers.
 	//
 	// Valid values are: plaintext, ssl, sasl_plaintext, sasl_ssl.
 	//
 	// Applies To: Consumer, Producer
-	SecurityProtocol SecurityProtocol `env:"KAFKA_SECURITY_PROTOCOL, default=plaintext" json:"securityProtocol" yaml:"securityProtocol"`
+	SecurityProtocol SecurityProtocol `env:"KAFKA_SECURITY_PROTOCOL, default=plaintext"`
 
 	// The location of the certificate authority file used to verify the brokers.
 	//
 	// Applies To: Consumer, Producer
-	CertificateAuthorityLocation string `env:"KAFKA_CA_LOCATION" json:"certificateAuthorityLocation" yaml:"certificateAuthorityLocation"`
+	CertificateAuthorityLocation string `env:"KAFKA_CA_LOCATION"`
 
 	// The location of the client certificate used to authenticate with the brokers.
 	//
 	// Applies To: Consumer, Producer
-	CertificateLocation string `env:"KAFKA_CERT_LOCATION" json:"certificateLocation" yaml:"certificateLocation"`
+	CertificateLocation string `env:"KAFKA_CERT_LOCATION"`
 
 	// The location of the key for the client certificate.
 	//
 	// Applies To: Consumer, Producer
-	CertificateKeyLocation string `env:"KAFKA_CERT_KEY_LOCATION" json:"certificateKeyLocation" yaml:"certificateKeyLocation"`
+	CertificateKeyLocation string `env:"KAFKA_CERT_KEY_LOCATION"`
 
 	// The password for the key used for the client certificate.
 	//
 	// Applies To: Consumer, Producer
-	CertificateKeyPassword string `env:"KAFKA_CERT_KEY_PASSWORD" json:"certificateKeyPassword" yaml:"certificateKeyPassword"`
+	CertificateKeyPassword string `env:"KAFKA_CERT_KEY_PASSWORD"`
 
 	// Skip TLS verification when using SSL or SASL_SSL.
 	//
 	// Applies To: Consumer, Producer
-	SkipTlsVerification bool `env:"KAFKA_SKIP_TLS_VERIFICATION, default=false" json:"skipTlsVerification" yaml:"skipTlsVerification"`
+	SkipTlsVerification bool `env:"KAFKA_SKIP_TLS_VERIFICATION, default=false"`
 
 	// The SASL mechanism to use for SASL authentication.
 	//
 	// Applies To: Consumer, Producer
-	SASLMechanism SaslMechanism `env:"KAFKA_SASL_MECHANISM, default=PLAIN" json:"saslMechanism" yaml:"saslMechanism"`
+	SASLMechanism SaslMechanism `env:"KAFKA_SASL_MECHANISM, default=PLAIN"`
 
 	// The username for authenticating with SASL.
 	//
 	// Applies To: Consumer, Producer
-	SASLUsername string `env:"KAFKA_SASL_USER" json:"saslUsername" yaml:"saslUsername"`
+	SASLUsername string `env:"KAFKA_SASL_USER"`
 
 	// The password for authenticating with SASL.
 	//
 	// Applies To: Consumer, Producer
-	SASLPassword string `env:"KAFKA_SASL_PASSWORD" json:"saslPassword" yaml:"saslPassword"`
+	SASLPassword string `env:"KAFKA_SASL_PASSWORD"`
 
 	// The number of acknowledgements the producer requires the leader to have
 	// received before considering a request complete. The default value is
@@ -147,7 +147,7 @@ type Config struct {
 	// before proceeding.
 	//
 	// Applies To: Producer
-	RequiredAcks Ack `env:"KAFKA_PRODUCER_REQUIRED_ACKS, default=all" json:"requiredAcks" yaml:"requiredAcks"`
+	RequiredAcks Ack `env:"KAFKA_PRODUCER_REQUIRED_ACKS, default=all"`
 
 	// When set to `true`, the producer will ensure that messages are successfully
 	// produced exactly once and in the original produce order.
@@ -159,14 +159,14 @@ type Config struct {
 	// configuration is incompatible.
 	//
 	// Applies To: Producer
-	Idempotence bool `env:"KAFKA_PRODUCER_IDEMPOTENCE, default=false" json:"idempotence" yaml:"idempotence"`
+	Idempotence bool `env:"KAFKA_PRODUCER_IDEMPOTENCE, default=false"`
 
 	// The transactional ID to use for messages produced by the producer. This
 	// is used to ensure that messages are produced atomically and in order. This
 	// is required when using transactions.
 	//
 	// Applies To: Producer
-	TransactionID string `env:"KAFKA_PRODUCER_TRANSACTION_ID" json:"transactionId" yaml:"transactionId"`
+	TransactionID string `env:"KAFKA_PRODUCER_TRANSACTION_ID"`
 
 	// Configures the logger used by the Consumer and Producer types.
 	//
@@ -242,6 +242,30 @@ func LoadConfigFromEnv() (Config, error) {
 }
 
 func LoadConfigFromFile(fp string) (Config, error) {
+	type config struct {
+		BootstrapServers             []string         `json:"bootstrapServers" yaml:"bootstrapServers"`
+		GroupID                      string           `json:"groupId" yaml:"groupId"`
+		SessionTimeout               Duration         `json:"sessionTimeout" yaml:"sessionTimeout"`
+		HeartbeatInterval            Duration         `json:"heartbeatInterval" yaml:"heartbeatInterval"`
+		CommitInterval               Duration         `json:"commitInterval" yaml:"commitInterval"`
+		PollTimeout                  Duration         `json:"pollTimeout" yaml:"pollTimeout"`
+		AutoOffsetReset              AutoOffsetReset  `json:"autoOffsetReset" yaml:"autoOffsetReset"`
+		MessageMaxBytes              int              `json:"messageMaxBytes" yaml:"messageMaxBytes"`
+		MaxFetchBytes                int              `json:"maxFetchBytes" yaml:"maxFetchBytes"`
+		SecurityProtocol             SecurityProtocol `json:"securityProtocol" yaml:"securityProtocol"`
+		CertificateAuthorityLocation string           `json:"certificateAuthorityLocation" yaml:"certificateAuthorityLocation"`
+		CertificateLocation          string           `json:"certificateLocation" yaml:"certificateLocation"`
+		CertificateKeyLocation       string           `json:"certificateKeyLocation" yaml:"certificateKeyLocation"`
+		CertificateKeyPassword       string           `json:"certificateKeyPassword" yaml:"certificateKeyPassword"`
+		SkipTlsVerification          bool             `json:"skipTlsVerification" yaml:"skipTlsVerification"`
+		SASLMechanism                SaslMechanism    `json:"saslMechanism" yaml:"saslMechanism"`
+		SASLUsername                 string           `json:"saslUsername" yaml:"saslUsername"`
+		SASLPassword                 string           `json:"saslPassword" yaml:"saslPassword"`
+		RequiredAcks                 Ack              `json:"requiredAcks" yaml:"requiredAcks"`
+		Idempotence                  bool             `json:"idempotence" yaml:"idempotence"`
+		TransactionID                string           `json:"transactionID" yaml:"transactionID"`
+	}
+
 	file, err := os.Open(fp)
 	if err != nil {
 		return Config{}, fmt.Errorf("failed to open file: %w", err)
@@ -252,7 +276,7 @@ func LoadConfigFromFile(fp string) (Config, error) {
 		return Config{}, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	var conf Config
+	var conf config
 	ext := filepath.Ext(fp)
 	switch ext {
 	case ".json":
@@ -260,13 +284,61 @@ func LoadConfigFromFile(fp string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("failed to unmarshal json: %w", err)
 		}
-		return conf, nil
+		kafkaConf := Config{
+			BootstrapServers:             conf.BootstrapServers,
+			GroupID:                      conf.GroupID,
+			SessionTimeout:               conf.SessionTimeout.Duration,
+			HeartbeatInterval:            conf.HeartbeatInterval.Duration,
+			CommitInterval:               conf.CommitInterval.Duration,
+			PollTimeout:                  conf.PollTimeout.Duration,
+			AutoOffsetReset:              conf.AutoOffsetReset,
+			MessageMaxBytes:              conf.MessageMaxBytes,
+			MaxFetchBytes:                conf.MaxFetchBytes,
+			SecurityProtocol:             conf.SecurityProtocol,
+			CertificateAuthorityLocation: conf.CertificateAuthorityLocation,
+			CertificateLocation:          conf.CertificateLocation,
+			CertificateKeyLocation:       conf.CertificateKeyLocation,
+			CertificateKeyPassword:       conf.CertificateKeyPassword,
+			SkipTlsVerification:          conf.SkipTlsVerification,
+			SASLMechanism:                conf.SASLMechanism,
+			SASLUsername:                 conf.SASLUsername,
+			SASLPassword:                 conf.SASLPassword,
+			RequiredAcks:                 conf.RequiredAcks,
+			Idempotence:                  conf.Idempotence,
+			TransactionID:                conf.TransactionID,
+		}
+		kafkaConf.init()
+		return kafkaConf, nil
 	case ".yaml":
 		err := yaml.Unmarshal(contents, &conf)
 		if err != nil {
 			return Config{}, fmt.Errorf("failed to unmarshal yaml: %w", err)
 		}
-		return conf, nil
+		kafkaConf := Config{
+			BootstrapServers:             conf.BootstrapServers,
+			GroupID:                      conf.GroupID,
+			SessionTimeout:               conf.SessionTimeout.Duration,
+			HeartbeatInterval:            conf.HeartbeatInterval.Duration,
+			CommitInterval:               conf.CommitInterval.Duration,
+			PollTimeout:                  conf.PollTimeout.Duration,
+			AutoOffsetReset:              conf.AutoOffsetReset,
+			MessageMaxBytes:              conf.MessageMaxBytes,
+			MaxFetchBytes:                conf.MaxFetchBytes,
+			SecurityProtocol:             conf.SecurityProtocol,
+			CertificateAuthorityLocation: conf.CertificateAuthorityLocation,
+			CertificateLocation:          conf.CertificateLocation,
+			CertificateKeyLocation:       conf.CertificateKeyLocation,
+			CertificateKeyPassword:       conf.CertificateKeyPassword,
+			SkipTlsVerification:          conf.SkipTlsVerification,
+			SASLMechanism:                conf.SASLMechanism,
+			SASLUsername:                 conf.SASLUsername,
+			SASLPassword:                 conf.SASLPassword,
+			RequiredAcks:                 conf.RequiredAcks,
+			Idempotence:                  conf.Idempotence,
+			TransactionID:                conf.TransactionID,
+		}
+		kafkaConf.init()
+		return kafkaConf, nil
 	default:
 		return Config{}, fmt.Errorf("unsupported file type: %s", ext)
 	}

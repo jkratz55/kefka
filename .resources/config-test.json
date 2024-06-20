@@ -1,0 +1,14 @@
+{
+  "bootstrapServers": [
+    "localhost:9092"
+  ],
+  "groupId": "test-group",
+  "sessionTimeout": "60s",
+  "heartbeatInterval": "10s",
+  "commitInterval": "3s",
+  "pollTimeout": "200ms",
+  "autoOffsetReset": "earliest",
+  "messageMaxBytes": 1048576,
+  "maxFetchBytes": 26214400,
+  "securityProtocol": "plaintext"
+}

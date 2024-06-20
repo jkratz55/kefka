@@ -3,6 +3,7 @@ package kefka
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type SecurityProtocol string
@@ -30,7 +31,7 @@ func (sp *SecurityProtocol) UnmarshalJSON(b []byte) error {
 		return fmt.Errorf("security protocol unmarshal json: %w", err)
 	}
 
-	s, err := ParseSecurityProtocol(string(b))
+	s, err := ParseSecurityProtocol(str)
 	if err != nil {
 		return err
 	}
@@ -58,7 +59,7 @@ func (sp *SecurityProtocol) String() string {
 }
 
 func ParseSecurityProtocol(s string) (SecurityProtocol, error) {
-	switch s {
+	switch strings.ToLower(s) {
 	case "plaintext":
 		return Plaintext, nil
 	case "ssl":

@@ -65,6 +65,4 @@ func TestNewConsumer(t *testing.T) {
 	}
 }
 
-func TestConsumer_Run(t *testing.T) {
-
-}
+// todo: Consumer needs a lot more unit testing

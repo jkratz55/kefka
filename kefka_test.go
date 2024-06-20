@@ -61,3 +61,35 @@ func TestLoadConfigFromEnv(t *testing.T) {
 
 	assert.Equal(t, expected, conf)
 }
+
+func TestLoadConfigFromFile(t *testing.T) {
+	conf, err := LoadConfigFromFile(".resources/config-test.json")
+	assert.NoError(t, err)
+
+	expected := Config{
+		BootstrapServers:             []string{"localhost:9092"},
+		GroupID:                      "test-group",
+		SessionTimeout:               time.Second * 60,
+		HeartbeatInterval:            time.Second * 10,
+		CommitInterval:               time.Second * 3,
+		PollTimeout:                  time.Millisecond * 200,
+		AutoOffsetReset:              Earliest,
+		MessageMaxBytes:              1048576,
+		MaxFetchBytes:                26214400,
+		SecurityProtocol:             Plaintext,
+		CertificateAuthorityLocation: "",
+		CertificateLocation:          "",
+		CertificateKeyLocation:       "",
+		CertificateKeyPassword:       "",
+		SkipTlsVerification:          false,
+		SASLMechanism:                "",
+		SASLUsername:                 "",
+		SASLPassword:                 "",
+		RequiredAcks:                 AckAll,
+		Idempotence:                  false,
+		TransactionID:                "",
+		Logger:                       DefaultLogger(),
+	}
+
+	assert.Equal(t, expected, conf)
+}
