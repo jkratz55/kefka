@@ -25,6 +25,7 @@ var (
 	consumerCommitOffsetErrors      *prometheus.CounterVec
 	consumerStoreOffsetErrors       *prometheus.CounterVec
 	producerMessagesEnqueued        *prometheus.CounterVec
+	producerMessagesEnqueueFailures *prometheus.CounterVec
 	producerMessagesDelivered       *prometheus.CounterVec
 	producerMessageDeliveryFailures *prometheus.CounterVec
 	producerKafkaErrors             *prometheus.CounterVec
@@ -45,7 +46,7 @@ func init() {
 		Namespace: "kefka",
 		Subsystem: "consumer",
 		Name:      "messages_processed",
-		Help:      "Number of messages processed by the consumer",
+		Help:      "Number of messages processed by the consumer regardless of success or failure",
 	}, []string{"topic"})
 	consumerMessagesFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "kefka",
@@ -89,6 +90,36 @@ func init() {
 		Name:      "commit_offset_errors",
 		Help:      "Number of errors that occurred while committing offsets",
 	}, []string{"topic"})
+	producerMessagesEnqueued = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "producer",
+		Name:      "messages_enqueued",
+		Help:      "Number of messages enqueued by the producer",
+	}, []string{"topic"})
+	producerMessagesEnqueueFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "producer",
+		Name:      "messages_enqueue_failures",
+		Help:      "Number of messages that failed to be enqueued by the producer",
+	}, []string{"topic"})
+	producerMessagesDelivered = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "producer",
+		Name:      "messages_delivered",
+		Help:      "Number of messages delivered by the producer",
+	}, []string{"topic"})
+	producerMessageDeliveryFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "producer",
+		Name:      "message_delivery_failures",
+		Help:      "Number of messages that failed to be delivered by the producer",
+	}, []string{"topic"})
+	producerKafkaErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "producer",
+		Name:      "kafka_errors",
+		Help:      "Number of errors returned by the Kafka client",
+	}, []string{"code"})
 
 	err := multierr.Combine(
 		prometheus.Register(kefkaVersion),
@@ -101,6 +132,11 @@ func init() {
 		prometheus.Register(consumerRebalances),
 		prometheus.Register(consumerCommitOffsetErrors),
 		prometheus.Register(consumerStoreOffsetErrors),
+		prometheus.Register(producerMessagesEnqueued),
+		prometheus.Register(producerMessagesEnqueueFailures),
+		prometheus.Register(producerMessagesDelivered),
+		prometheus.Register(producerMessageDeliveryFailures),
+		prometheus.Register(producerKafkaErrors),
 	)
 	if err != nil {
 		DefaultLogger().Error("failed to register prometheus metrics: some or all metrics may not be available",

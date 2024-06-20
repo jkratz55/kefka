@@ -97,6 +97,7 @@ func NewProducer(conf Config) (*Producer, error) {
 				switch event := rawEvent.(type) {
 				case *kafka.Message:
 					if event.TopicPartition.Error != nil {
+						producerMessageDeliveryFailures.WithLabelValues(*event.TopicPartition.Topic).Inc()
 						logger.Error("kafka delivery failure",
 							slog.String("err", event.TopicPartition.Error.Error()),
 							slog.Group("kafkaMessage",
@@ -108,6 +109,7 @@ func NewProducer(conf Config) (*Producer, error) {
 							conf.OnError(event.TopicPartition.Error)
 						}
 					} else {
+						producerMessagesDelivered.WithLabelValues(*event.TopicPartition.Topic).Inc()
 						logger.Debug("kafka message successfully delivered",
 							slog.Group("kafkaMessage",
 								slog.String("key", string(event.Key)),
@@ -117,6 +119,7 @@ func NewProducer(conf Config) (*Producer, error) {
 								slog.Any("headers", event.Headers)))
 					}
 				case kafka.Error:
+					producerKafkaErrors.WithLabelValues(event.Code().String()).Inc()
 					logger.Error("kafka producer error",
 						slog.String("err", event.Error()),
 						slog.Int("code", int(event.Code())),
@@ -147,7 +150,12 @@ func (p *Producer) M() *MessageBuilder {
 
 func (p *Producer) Produce(m *kafka.Message, deliveryChan chan kafka.Event) error {
 	m.TopicPartition.Partition = kafka.PartitionAny
-	return p.base.Produce(m, deliveryChan)
+	err := p.base.Produce(m, deliveryChan)
+	if err != nil {
+		producerMessagesEnqueueFailures.WithLabelValues(*m.TopicPartition.Topic).Inc()
+	}
+	producerMessagesEnqueued.WithLabelValues(*m.TopicPartition.Topic).Inc()
+	return err
 }
 
 func (p *Producer) ProduceAndWait(m *kafka.Message) error {
@@ -164,9 +172,12 @@ func (p *Producer) ProduceAndWait(m *kafka.Message) error {
 	switch ev := e.(type) {
 	case *kafka.Message:
 		if ev.TopicPartition.Error != nil {
+			producerMessageDeliveryFailures.WithLabelValues(*ev.TopicPartition.Topic).Inc()
 			return fmt.Errorf("kafka delivery failure: %w", ev.TopicPartition.Error)
 		}
+		producerMessagesDelivered.WithLabelValues(*ev.TopicPartition.Topic).Inc()
 	case kafka.Error:
+		producerKafkaErrors.WithLabelValues(ev.Code().String()).Inc()
 		return fmt.Errorf("kafka error: %w", ev)
 	default:
 		return fmt.Errorf("unexpected kafka event: %T", e)
@@ -186,12 +197,14 @@ func (p *Producer) Transactional(ctx context.Context, msgs []*kafka.Message) err
 	for i := 0; i < len(msgs); i++ {
 		err = p.base.Produce(msgs[i], deliveryChan)
 		if err != nil {
+			producerMessagesEnqueueFailures.WithLabelValues(*msgs[i].TopicPartition.Topic).Inc()
 			abortErr := p.base.AbortTransaction(ctx)
 			if abortErr != nil {
 				return fmt.Errorf("kafka: failed to abort transaction: %w: failed to produce message: %w", abortErr, err)
 			}
 			return err
 		}
+		producerMessagesEnqueued.WithLabelValues(*msgs[i].TopicPartition.Topic).Inc()
 	}
 
 	for i := 0; i < len(msgs); i++ {
@@ -199,12 +212,14 @@ func (p *Producer) Transactional(ctx context.Context, msgs []*kafka.Message) err
 		switch ev := event.(type) {
 		case *kafka.Message:
 			if ev.TopicPartition.Error != nil {
+				producerMessageDeliveryFailures.WithLabelValues(*ev.TopicPartition.Topic).Inc()
 				abortErr := p.base.AbortTransaction(ctx)
 				if abortErr != nil {
 					return fmt.Errorf("kafka: failed to abort transaction: %w: message delivery failed: %w", abortErr, ev.TopicPartition.Error)
 				}
 				return fmt.Errorf("kafka: transaction aborted: delivery failure: %w", ev.TopicPartition.Error)
 			}
+			producerMessagesDelivered.WithLabelValues(*ev.TopicPartition.Topic).Inc()
 		}
 	}
 	close(deliveryChan)

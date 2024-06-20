@@ -79,8 +79,10 @@ func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
 
 	err = m.producer.base.Produce(msg, deliveryChan)
 	if err != nil {
+		producerMessagesEnqueueFailures.WithLabelValues(m.topic).Inc()
 		return fmt.Errorf("kafka: enqueue message: %w", err)
 	}
+	producerMessagesEnqueued.WithLabelValues(m.topic).Inc()
 	return nil
 }
 
@@ -101,9 +103,12 @@ func (m *MessageBuilder) SendAndWait() error {
 	switch ev := e.(type) {
 	case *kafka.Message:
 		if ev.TopicPartition.Error != nil {
+			producerMessageDeliveryFailures.WithLabelValues(m.topic).Inc()
 			return fmt.Errorf("kafka delivery failure: %w", ev.TopicPartition.Error)
 		}
+		producerMessagesDelivered.WithLabelValues(m.topic).Inc()
 	case kafka.Error:
+		producerKafkaErrors.WithLabelValues(ev.Code().String()).Inc()
 		return fmt.Errorf("kafka error: %w", ev)
 	default:
 		return fmt.Errorf("unexpected kafka event: %T", e)
