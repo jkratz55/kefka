@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
@@ -185,6 +186,7 @@ func (c *Consumer) Run() error {
 }
 
 func (c *Consumer) handleError(err kafka.Error) error {
+	consumerKafkaErrors.WithLabelValues(err.Code().String()).Inc()
 	// If an error callback is provided invoke it with the error
 	if c.conf.OnError != nil {
 		c.conf.OnError(err)
@@ -207,11 +209,19 @@ func (c *Consumer) handleError(err kafka.Error) error {
 }
 
 func (c *Consumer) handleMessage(msg *kafka.Message) {
+	start := time.Now()
 	err := c.handler.Handle(msg)
+	duration := time.Since(start).Seconds()
+	status := statusSuccess
+
 	if err != nil {
+		consumerMessagesFailed.WithLabelValues(*msg.TopicPartition.Topic).Inc()
 		c.logger.Error("Failed to process message: handler returned a error",
 			consumerSlogAttrs(msg, err)...)
+		status = statusError
 	}
+	consumerMessagesProcessed.WithLabelValues(*msg.TopicPartition.Topic).Inc()
+	consumerHandlerDuration.WithLabelValues(*msg.TopicPartition.Topic, status).Observe(duration)
 
 	// If the Consumer is configured to commit offsets after every message
 	// commit the offset for the message. Otherwise, the offset is stored
@@ -219,6 +229,7 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 	if c.commitEveryMessage {
 		_, err := c.base.CommitMessage(msg)
 		if err != nil {
+			consumerStoreOffsetErrors.WithLabelValues(*msg.TopicPartition.Topic).Inc()
 			// If an error callback is provided invoke it with the error
 			if c.conf.OnError != nil {
 				c.conf.OnError(err)
@@ -229,6 +240,7 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 	} else {
 		_, err := c.base.StoreMessage(msg)
 		if err != nil {
+			consumerStoreOffsetErrors.WithLabelValues(*msg.TopicPartition.Topic).Inc()
 			// If an error callback is provided invoke it with the error
 			if c.conf.OnError != nil {
 				c.conf.OnError(err)
@@ -242,6 +254,7 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 func (c *Consumer) handleOffsetsCommitted(offsets kafka.OffsetsCommitted) {
 	for _, tp := range offsets.Offsets {
 		if tp.Error != nil {
+			consumerCommitOffsetErrors.WithLabelValues(*tp.Topic).Inc()
 			if c.conf.OnError != nil {
 				c.conf.OnError(tp.Error)
 			}
@@ -251,6 +264,7 @@ func (c *Consumer) handleOffsetsCommitted(offsets kafka.OffsetsCommitted) {
 				slog.Int("partition", int(tp.Partition)),
 				slog.Int64("offset", int64(tp.Offset)))
 		} else {
+			consumerOffsetsCommited.WithLabelValues(*tp.Topic).Inc()
 			c.logger.Debug("Successfully committed offset to Kafka brokers",
 				slog.String("topic", *tp.Topic),
 				slog.Int("partition", int(tp.Partition)),
@@ -333,6 +347,7 @@ func (c *Consumer) IsClosed() bool {
 }
 
 func (c *Consumer) rebalanceCb(_ *kafka.Consumer, event kafka.Event) error {
+	consumerRebalances.WithLabelValues(c.topic).Inc()
 	switch e := event.(type) {
 	case kafka.AssignedPartitions:
 		c.logger.Info("Consumer group rebalanced: assigned partitions",

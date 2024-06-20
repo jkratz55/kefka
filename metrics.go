@@ -22,6 +22,8 @@ var (
 	consumerKafkaErrors             *prometheus.CounterVec
 	consumerOffsetsCommited         *prometheus.CounterVec
 	consumerRebalances              *prometheus.CounterVec
+	consumerCommitOffsetErrors      *prometheus.CounterVec
+	consumerStoreOffsetErrors       *prometheus.CounterVec
 	producerMessagesEnqueued        *prometheus.CounterVec
 	producerMessagesDelivered       *prometheus.CounterVec
 	producerMessageDeliveryFailures *prometheus.CounterVec
@@ -75,10 +77,30 @@ func init() {
 		Name:      "rebalances",
 		Help:      "Number of times the consumer has rebalanced",
 	}, []string{"topic"})
+	consumerStoreOffsetErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "consumer",
+		Name:      "store_offset_errors",
+		Help:      "Number of errors that occurred while storing offsets",
+	}, []string{"topic"})
+	consumerCommitOffsetErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "consumer",
+		Name:      "commit_offset_errors",
+		Help:      "Number of errors that occurred while committing offsets",
+	}, []string{"topic"})
 
 	err := multierr.Combine(
 		prometheus.Register(kefkaVersion),
 		prometheus.Register(confluentKafkaLibraryVersion),
+		prometheus.Register(consumerMessagesProcessed),
+		prometheus.Register(consumerMessagesFailed),
+		prometheus.Register(consumerHandlerDuration),
+		prometheus.Register(consumerKafkaErrors),
+		prometheus.Register(consumerOffsetsCommited),
+		prometheus.Register(consumerRebalances),
+		prometheus.Register(consumerCommitOffsetErrors),
+		prometheus.Register(consumerStoreOffsetErrors),
 	)
 	if err != nil {
 		DefaultLogger().Error("failed to register prometheus metrics: some or all metrics may not be available",
