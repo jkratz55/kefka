@@ -29,6 +29,10 @@ var (
 	producerMessagesDelivered       *prometheus.CounterVec
 	producerMessageDeliveryFailures *prometheus.CounterVec
 	producerKafkaErrors             *prometheus.CounterVec
+	readerMessagesProcessed         *prometheus.CounterVec
+	readerMessagesFailed            *prometheus.CounterVec
+	readerHandlerDuration           *prometheus.HistogramVec
+	readerKafkaErrors               *prometheus.CounterVec
 )
 
 func init() {
@@ -121,6 +125,31 @@ func init() {
 		Name:      "kafka_errors",
 		Help:      "Number of errors returned by the Kafka client",
 	}, []string{"code"})
+	readerMessagesProcessed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "reader",
+		Name:      "messages_processed",
+		Help:      "Number of messages processed by the reader regardless of success or failure",
+	}, []string{"topic", "partition"})
+	readerMessagesFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "reader",
+		Name:      "messages_failed",
+		Help:      "Number of messages that were not successfully processed",
+	}, []string{"topic", "partition"})
+	readerHandlerDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "kefka",
+		Subsystem: "reader",
+		Name:      "handler_duration_seconds",
+		Help:      "Duration of time for a handler to process a message",
+		Buckets:   prometheus.ExponentialBuckets(0.001, 2, 10),
+	}, []string{"topic", "partition", "status"})
+	readerKafkaErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "kefka",
+		Subsystem: "reader",
+		Name:      "kafka_errors",
+		Help:      "Number of errors returned by the Kafka client",
+	}, []string{"code"})
 
 	err := multierr.Combine(
 		prometheus.Register(kefkaVersion),
@@ -138,6 +167,10 @@ func init() {
 		prometheus.Register(producerMessagesDelivered),
 		prometheus.Register(producerMessageDeliveryFailures),
 		prometheus.Register(producerKafkaErrors),
+		prometheus.Register(readerMessagesProcessed),
+		prometheus.Register(readerMessagesFailed),
+		prometheus.Register(readerHandlerDuration),
+		prometheus.Register(readerKafkaErrors),
 	)
 	if err != nil {
 		DefaultLogger().Error("failed to register prometheus metrics: some or all metrics may not be available",
