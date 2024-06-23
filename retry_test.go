@@ -1,8 +1,6 @@
 package kefka
 
 import (
-	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -36,9 +34,6 @@ func TestRetryHandler_Handle(t *testing.T) {
 			opts: RetryOpts{
 				MaxAttempts: 3,
 				Backoff:     ConstantBackoff(time.Millisecond * 100),
-				OnError: func(err error) bool {
-					return true
-				},
 			},
 			initHandler: func() Handler {
 				h := new(mockHandler)
@@ -54,13 +49,10 @@ func TestRetryHandler_Handle(t *testing.T) {
 			opts: RetryOpts{
 				MaxAttempts: 3,
 				Backoff:     ConstantBackoff(time.Millisecond * 100),
-				OnError: func(err error) bool {
-					return true
-				},
 			},
 			initHandler: func() Handler {
 				h := new(mockHandler)
-				h.On("Handle", msg).Return(assert.AnError).Once()
+				h.On("Handle", msg).Return(RetryableError(assert.AnError)).Once()
 				h.On("Handle", msg).Return(nil).Once()
 				return h
 			},
@@ -73,13 +65,10 @@ func TestRetryHandler_Handle(t *testing.T) {
 			opts: RetryOpts{
 				MaxAttempts: 3,
 				Backoff:     ConstantBackoff(time.Millisecond * 100),
-				OnError: func(err error) bool {
-					return true
-				},
 			},
 			initHandler: func() Handler {
 				h := new(mockHandler)
-				h.On("Handle", msg).Return(assert.AnError)
+				h.On("Handle", msg).Return(RetryableError(assert.AnError))
 				return h
 			},
 			message:          msg,
@@ -91,13 +80,10 @@ func TestRetryHandler_Handle(t *testing.T) {
 			opts: RetryOpts{
 				MaxAttempts: 3,
 				Backoff:     ConstantBackoff(time.Millisecond * 100),
-				OnError: func(err error) bool {
-					return true
-				},
 			},
 			initHandler: func() Handler {
 				h := new(mockHandler)
-				h.On("Handle", msg).Return(assert.AnError).Times(2)
+				h.On("Handle", msg).Return(RetryableError(assert.AnError)).Times(2)
 				h.On("Handle", msg).Return(nil).Once()
 				return h
 			},
@@ -110,17 +96,11 @@ func TestRetryHandler_Handle(t *testing.T) {
 			opts: RetryOpts{
 				MaxAttempts: 3,
 				Backoff:     ConstantBackoff(time.Millisecond * 100),
-				OnError: func(err error) bool {
-					if errors.Is(err, context.DeadlineExceeded) {
-						return false
-					}
-					return true
-				},
 			},
 			initHandler: func() Handler {
 				h := new(mockHandler)
-				h.On("Handle", msg).Return(assert.AnError).Once()
-				h.On("Handle", msg).Return(context.DeadlineExceeded)
+				h.On("Handle", msg).Return(RetryableError(assert.AnError)).Once()
+				h.On("Handle", msg).Return(assert.AnError)
 				return h
 			},
 			message:          msg,

@@ -88,6 +88,7 @@ func (d *DeadLetterHandler) Handle(message *kafka.Message) error {
 
 		err = dlMessage.SendAndWait()
 		if err != nil {
+			dltMessageFailures.WithLabelValues(*message.TopicPartition.Topic).Inc()
 			d.opts.Logger.Error("Failed to publish message to dead letter topic",
 				slog.String("err", err.Error()),
 				slog.Group("originalMessage",
@@ -109,6 +110,7 @@ func (d *DeadLetterHandler) Handle(message *kafka.Message) error {
 			}
 			return fmt.Errorf("failed to publish message to dead letter topic: %w", err)
 		} else {
+			dltMessagesProduced.WithLabelValues(*message.TopicPartition.Topic).Inc()
 			d.opts.Logger.Info("Successfully published message to dead letter topic",
 				slog.Group("deadLetterMessage",
 					slog.String("topic", dlMessage.topic),

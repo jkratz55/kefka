@@ -97,6 +97,12 @@ func NewReader(conf Config, handler Handler, tps []kafka.TopicPartition, opts Re
 	_ = configMap.SetKey("go.logs.channel.enable", true)
 	_ = configMap.SetKey("go.logs.channel", logChan)
 
+	// If a PartitionEOF callback is set or StopOnEndOfPartition is enabled then
+	// partition EOF events needs to be enabled
+	if opts.OnEndOfPartition != nil || opts.StopOnEndOfPartition {
+		_ = configMap.SetKey("enable.partition.eof", true)
+	}
+
 	// If KEFKA_DEBUG is enabled print the Kafka configuration to stdout for
 	// debugging/troubleshooting purposes.
 	if ok, _ := strconv.ParseBool(os.Getenv("KEFKA_DEBUG")); ok {
@@ -321,6 +327,48 @@ func (r *Reader) IsClosed() bool {
 }
 
 func readerConfigMap(conf Config) *kafka.ConfigMap {
-	// todo: implement me
-	return nil
+	// Configure base properties/parameters
+	configMap := &kafka.ConfigMap{
+		"bootstrap.servers":                  strings.Join(conf.BootstrapServers, ","),
+		"group.id":                           "KEFKA", // this is required but won't be used
+		"auto.offset.reset":                  Earliest,
+		"enable.auto.offset.store":           false,
+		"enable.auto.commit":                 false,
+		"auto.commit.interval.ms":            0,
+		"security.protocol":                  conf.SecurityProtocol.String(),
+		"message.max.bytes":                  conf.MessageMaxBytes,
+		"fetch.max.bytes":                    conf.MaxFetchBytes,
+		"topic.metadata.refresh.interval.ms": 300000,
+		"connections.max.idle.ms":            600000,
+	}
+
+	// If SSL is enabled any additional SSL configuration provided needs added
+	// to the configmap
+	if conf.SecurityProtocol == Ssl || conf.SecurityProtocol == SaslSsl {
+		if conf.CertificateAuthorityLocation != "" {
+			_ = configMap.SetKey("ssl.ca.location", conf.CertificateAuthorityLocation)
+		}
+		if conf.CertificateLocation != "" {
+			_ = configMap.SetKey("ssl.certificate.location", conf.CertificateLocation)
+		}
+		if conf.CertificateKeyLocation != "" {
+			_ = configMap.SetKey("ssl.key.location", conf.CertificateKeyLocation)
+		}
+		if conf.CertificateKeyPassword != "" {
+			_ = configMap.SetKey("ssl.key.password", conf.CertificateKeyPassword)
+		}
+		if conf.SkipTlsVerification {
+			_ = configMap.SetKey("enable.ssl.certificate.verification", false)
+		}
+	}
+
+	// If using SASL authentication add additional SASL configuration to the
+	// configmap
+	if conf.SecurityProtocol == SaslPlaintext || conf.SecurityProtocol == SaslSsl {
+		_ = configMap.SetKey("sasl.mechanism", conf.SASLMechanism.String())
+		_ = configMap.SetKey("sasl.username", conf.SASLUsername)
+		_ = configMap.SetKey("sasl.password", conf.SASLPassword)
+	}
+
+	return configMap
 }
