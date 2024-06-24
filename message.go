@@ -80,7 +80,7 @@ func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
 	err = m.producer.base.Produce(msg, deliveryChan)
 	if err != nil {
 		producerMessagesEnqueueFailures.WithLabelValues(m.topic).Inc()
-		return fmt.Errorf("kafka: enqueue message: %w", err)
+		return RetryableError(fmt.Errorf("kafka: enqueue message: %w", err))
 	}
 	producerMessagesEnqueued.WithLabelValues(m.topic).Inc()
 	return nil
@@ -96,7 +96,7 @@ func (m *MessageBuilder) SendAndWait() error {
 
 	err := m.Send(deliveryChan)
 	if err != nil {
-		return fmt.Errorf("kafka: enqueue message: %w", err)
+		return err
 	}
 
 	e := <-deliveryChan

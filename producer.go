@@ -160,9 +160,10 @@ func (p *Producer) Produce(m *kafka.Message, deliveryChan chan kafka.Event) erro
 	err := p.base.Produce(m, deliveryChan)
 	if err != nil {
 		producerMessagesEnqueueFailures.WithLabelValues(*m.TopicPartition.Topic).Inc()
+		return RetryableError(fmt.Errorf("kafka: enqueue message: %w", err))
 	}
 	producerMessagesEnqueued.WithLabelValues(*m.TopicPartition.Topic).Inc()
-	return err
+	return nil
 }
 
 // ProduceAndWait produces a message to Kafka and waits for the delivery report.

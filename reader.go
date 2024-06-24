@@ -287,6 +287,8 @@ func (r *Reader) Position() ([]kafka.TopicPartition, error) {
 	return r.base.Position(r.topicPartitions)
 }
 
+// Lag returns the current lag for each partition the Reader is assigned/configured
+// to read from. The lag is represented as a map topic|partition -> lag.
 func (r *Reader) Lag() (map[string]int64, error) {
 	lags := make(map[string]int64)
 	positions, err := r.Position()
@@ -295,16 +297,17 @@ func (r *Reader) Lag() (map[string]int64, error) {
 	}
 
 	for _, pos := range positions {
-		if pos.Offset < 0 {
-			continue
-		}
-		_, high, err := r.base.QueryWatermarkOffsets(*pos.Topic, pos.Partition, 3000)
+		low, high, err := r.base.QueryWatermarkOffsets(*pos.Topic, pos.Partition, 3000)
 		if err != nil {
 			return lags, fmt.Errorf("kafka: failed to query watermark offsets: %w", err)
 		}
 
 		key := fmt.Sprintf("%s|%d", *pos.Topic, pos.Partition)
-		lags[key] = high - (int64(pos.Offset) - 1)
+		if pos.Offset < 0 {
+			lags[key] = high - low
+		} else {
+			lags[key] = high - int64(pos.Offset)
+		}
 	}
 
 	return lags, nil
@@ -331,7 +334,7 @@ func readerConfigMap(conf Config) *kafka.ConfigMap {
 	configMap := &kafka.ConfigMap{
 		"bootstrap.servers":                  strings.Join(conf.BootstrapServers, ","),
 		"group.id":                           "KEFKA", // this is required but won't be used
-		"auto.offset.reset":                  Earliest,
+		"auto.offset.reset":                  "earliest",
 		"enable.auto.offset.store":           false,
 		"enable.auto.commit":                 false,
 		"auto.commit.interval.ms":            0,

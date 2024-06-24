@@ -24,7 +24,13 @@ type DeadLetterOpts struct {
 	Logger *slog.Logger
 
 	// The callback that will be invoked if publishing to the dead letter topic
-	// fails. This can be used to store the message to disk, db, etc.
+	// fails. This can be used to store the message to disk, db, etc. It is
+	// basically the last chance to handle/save the message before the Consumer
+	// moves onto the next message.
+	//
+	// Although not recommended, the OnPublishError callback can be used to panic
+	// the application if the message must be processed and cannot be lost. However,
+	// this has serious implications and should be used with extreme caution.
 	OnPublishError func(msg *kafka.Message, err error)
 }
 
@@ -86,7 +92,7 @@ func (d *DeadLetterHandler) Handle(message *kafka.Message) error {
 		dlMessage.Header("kefka-original-timestamp", []byte(fmt.Sprintf("%d", message.Timestamp.Unix())))
 		dlMessage.Header("kefka-err", []byte(err.Error()))
 
-		err = dlMessage.SendAndWait()
+		err = d.produceMessage(dlMessage)
 		if err != nil {
 			dltMessageFailures.WithLabelValues(*message.TopicPartition.Topic).Inc()
 			d.opts.Logger.Error("Failed to publish message to dead letter topic",
@@ -120,4 +126,28 @@ func (d *DeadLetterHandler) Handle(message *kafka.Message) error {
 	}
 
 	return nil
+}
+
+func (d *DeadLetterHandler) produceMessage(msgBuilder *MessageBuilder) error {
+	var err error
+	for i := 3; i > 0; i-- {
+		err = msgBuilder.SendAndWait()
+		if err == nil {
+			// Success, return nil error value
+			return nil
+		}
+
+		// If the error is not retryable return the error immediately.
+		if !IsRetryable(err) {
+			return fmt.Errorf("dlt handler: failed to produce message to dead letter topic: %w", err)
+		}
+
+		// If the error is retryable that indicates it failed to enqueue. Try to
+		// flush the internal producer queue and try again.
+		d.opts.Logger.Warn("DeadLetterHandler failed to produce message to dead letter topic but error is retryable: flushing producer queue and retrying",
+			slog.String("err", err.Error()))
+		_ = d.opts.Producer.Flush(1000)
+	}
+
+	return fmt.Errorf("dlt handler: failed to enqueue message to dead letter topic after 3 attempts: %w", err)
 }

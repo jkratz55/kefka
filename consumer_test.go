@@ -5,6 +5,7 @@ import (
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestNewConsumer(t *testing.T) {
@@ -66,3 +67,9 @@ func TestNewConsumer(t *testing.T) {
 }
 
 // todo: Consumer needs a lot more unit testing
+
+func TestConsumer_Run(t *testing.T) {
+
+	base := new(mockBaseConsumer)
+	base.On("Poll", mock.Anything).Return()
+}

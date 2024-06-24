@@ -32,14 +32,30 @@ func main() {
 		return nil
 	})
 
+	var reader *kefka.Reader
 	readerOpts := kefka.ReaderOpts{
 		OnEndOfPartition: func(topic string, partition int, offset int64) {
 			logger.Info("End of partition reached",
 				slog.String("topic", topic),
 				slog.Int("partition", partition),
 				slog.Int64("offset", offset))
+			pos, err := reader.Position()
+			if err != nil {
+				logger.Error("Failed to get positions",
+					slog.String("err", err.Error()))
+			}
+			logger.Info("Current Positions",
+				slog.Any("positions", pos))
+
+			lag, err := reader.Lag()
+			if err != nil {
+				logger.Error("Failed to get lag",
+					slog.String("err", err.Error()))
+			}
+			logger.Info("Current Lag",
+				slog.Any("lag", lag))
 		},
-		StopOnEndOfPartition: false,
+		StopOnEndOfPartition: true,
 		Limit:                0,
 	}
 	topicPartitions := []kafka.TopicPartition{
@@ -47,13 +63,35 @@ func main() {
 			Topic:     kefka.StringPtr("test"),
 			Partition: 0,
 		},
+		{
+			Topic:     kefka.StringPtr("test"),
+			Partition: 1,
+		},
 	}
-	reader, err := kefka.NewReader(conf, handler, topicPartitions, readerOpts)
+	reader, err = kefka.NewReader(conf, handler, topicPartitions, readerOpts)
 	if err != nil {
 		logger.Error("Failed to initialize Kafka Reader",
 			slog.String("err", err.Error()))
 		os.Exit(1)
 	}
+
+	position, err := reader.Position()
+	if err != nil {
+		logger.Error("Failed to get positions",
+			slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+
+	logger.Info("Positions",
+		slog.Any("positions", position))
+
+	lag, err := reader.Lag()
+	if err != nil {
+		logger.Error("Failed to get lag",
+			slog.String("err", err.Error()))
+	}
+	logger.Info("Current Lag",
+		slog.Any("lag", lag))
 
 	if err := reader.Run(); err != nil {
 		logger.Error("Failed to run reader",
