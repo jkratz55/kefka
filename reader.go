@@ -35,6 +35,10 @@ type ReaderOpts struct {
 	Limit int
 }
 
+// Reader provides a high-level API for reading messages from Kafka. The Reader
+// differs from Consumer in that it is designed to simply read/view the contents
+// of a topic/partition and does not provide the ability to commit offsets as it
+// does not leverage consumer groups.
 type Reader struct {
 	base               *kafka.Consumer
 	handler            Handler
@@ -50,6 +54,7 @@ type Reader struct {
 	counter            int64
 }
 
+// NewReader initializes a new Reader instance with the provided configuration.
 func NewReader(conf Config, handler Handler, tps []kafka.TopicPartition, opts ReaderOpts) (*Reader, error) {
 	if handler == nil {
 		return nil, errors.New("invalid config: cannot initialize Reader with nil Handler")
@@ -133,6 +138,13 @@ func NewReader(conf Config, handler Handler, tps []kafka.TopicPartition, opts Re
 	return reader, nil
 }
 
+// Run starts polling events from Kafka and reading/processing messages. Run
+// is blocking and will continue to run until the Reader is closed, reached the
+// end of all partitions and configured to stop, configured with a message limit
+// and reaches limit, or encounters a fatal error.
+//
+// In almost all use cases Run should be invoked in a new goroutine. If the Reader
+// is gracefully closed Run should return a nil error value.
 func (r *Reader) Run() error {
 
 	// Try to acquire the lock to ensure Run cannot be invoked more than once on

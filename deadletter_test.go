@@ -74,6 +74,7 @@ func TestDeadLetterHandler_Handle(t *testing.T) {
 			initProcuder: func() *Producer {
 				p := new(mockBaseProducer)
 				p.On("Produce", mock.Anything, mock.Anything).Return(nil)
+				p.On("Flush", mock.Anything).Return(0)
 				return &Producer{
 					base:           p,
 					loggerStopChan: make(chan struct{}),
@@ -98,6 +99,7 @@ func TestDeadLetterHandler_Handle(t *testing.T) {
 			initProcuder: func() *Producer {
 				p := new(mockBaseProducer)
 				p.On("Produce", mock.Anything, mock.Anything).Return(assert.AnError)
+				p.On("Flush", mock.Anything).Return(0)
 				return &Producer{
 					base:           p,
 					loggerStopChan: make(chan struct{}),

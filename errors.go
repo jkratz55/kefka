@@ -1,5 +1,6 @@
 package kefka
 
+// IsRetryable returns true if the error is retryable, otherwise false.
 func IsRetryable(err error) bool {
 	if e, ok := err.(retryable); ok {
 		return e.IsRetryable()
@@ -7,6 +8,7 @@ func IsRetryable(err error) bool {
 	return false
 }
 
+// RetryableError wraps an error and marks it as retryable.
 func RetryableError(err error) error {
 	if err == nil {
 		return nil
