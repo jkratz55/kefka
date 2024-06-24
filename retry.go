@@ -1,11 +1,11 @@
 package kefka
 
 import (
+	"fmt"
 	"math"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/pkg/errors"
 )
 
 // Retry is a middleware for a Handler that retries processing a message when
@@ -84,7 +84,7 @@ func (r *RetryHandler) Handle(msg *kafka.Message) error {
 		// If the error is not retryable return the error immediately.
 		if !IsRetryable(err) {
 			retryHandlerNonRetryableErrors.WithLabelValues(*msg.TopicPartition.Topic).Inc()
-			return errors.Wrap(err, "failed to process message: not retryable")
+			return fmt.Errorf("failed to process message: not retryable: %w", err)
 		}
 
 		// If there are still attempts remaining delay the retry based on the
@@ -95,5 +95,5 @@ func (r *RetryHandler) Handle(msg *kafka.Message) error {
 	}
 
 	retryHandlerMaxAttemptsExceeded.WithLabelValues(*msg.TopicPartition.Topic).Inc()
-	return errors.Wrap(lastErr, "failed to process message: max attempts reached")
+	return fmt.Errorf("failed to process message: max attempts reached: %w", lastErr)
 }

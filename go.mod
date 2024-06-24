@@ -7,7 +7,6 @@ toolchain go1.22.3
 require (
 	github.com/confluentinc/confluent-kafka-go/v2 v2.4.0
 	github.com/google/uuid v1.6.0
-	github.com/pkg/errors v0.9.1
 )
 
 require (
@@ -54,6 +53,7 @@ require (
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.0 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect
