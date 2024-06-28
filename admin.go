@@ -1,7 +1,6 @@
 package kefka
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -163,6 +162,8 @@ func (ac *AdminClient) TopicPartitionsForTopicAndTimestamp(topic string, time ti
 	return mappedTopicPartitions, nil
 }
 
+// WatermarksForTopic returns the low and high watermarks for each partition as
+// a map of partition ID to Watermarks.
 func (ac *AdminClient) WatermarksForTopic(topic string) (map[int]Watermarks, error) {
 	if strings.TrimSpace(topic) == "" {
 		return nil, errors.New("fetch topic partitions failed: topic name is required")
@@ -190,6 +191,8 @@ func (ac *AdminClient) WatermarksForTopic(topic string) (map[int]Watermarks, err
 	return watermarks, nil
 }
 
+// WatermarksForTopicPartition returns the low and high watermarks for a given
+// topic and partition.
 func (ac *AdminClient) WatermarksForTopicPartition(topic string, partition int) (low int64, high int64, err error) {
 	low, high, err = ac.consumer.QueryWatermarkOffsets(topic, int32(partition), 3000)
 	if err != nil {
@@ -199,73 +202,28 @@ func (ac *AdminClient) WatermarksForTopicPartition(topic string, partition int) 
 	return low, high, nil
 }
 
+// Close closes the AdminClient and any resources it holds. Once close is called
+// the AdminClient is not usable.
 func (ac *AdminClient) Close() {
 	ac.admin.Close()
 	ac.consumer.Close()
 	close(ac.closeChan)
 }
 
+// IsClosed returns true if the AdminClient has been closed, otherwise false.
+func (ac *AdminClient) IsClosed() bool {
+	return ac.admin.IsClosed()
+}
+
 // TopicPartitionsForTopic returns all the topic/partitions for a given topic.
 func TopicPartitionsForTopic(conf Config, topic string) ([]kafka.TopicPartition, error) {
-	if strings.TrimSpace(topic) == "" {
-		return nil, errors.New("fetch topic partitions failed: topic name is required")
-	}
-
-	conf.init()
-	configMap := adminConfigMap(conf)
-
-	logChan := make(chan kafka.LogEvent, 100)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case logEvent, ok := <-logChan:
-				if !ok {
-					return
-				}
-				conf.Logger.Debug(logEvent.Message,
-					slog.Group("librdkafka",
-						slog.String("name", logEvent.Name),
-						slog.String("tag", logEvent.Tag),
-						slog.Int("level", logEvent.Level)))
-			}
-		}
-	}()
-
-	// Configure logs from librdkafka to be sent to our logger rather than stdout
-	_ = configMap.SetKey("go.logs.channel.enable", true)
-	_ = configMap.SetKey("go.logs.channel", logChan)
-
-	adminClient, err := kafka.NewAdminClient(configMap)
+	adminClient, err := NewAdminClient(conf)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize admin client: %w", err)
+		return nil, err
 	}
 	defer adminClient.Close()
 
-	metadata, err := adminClient.GetMetadata(&topic, false, 5000)
-	if err != nil {
-		return nil, fmt.Errorf("kafka admin client failed to get metadata: %w", err)
-	}
-
-	topicMetadata, ok := metadata.Topics[topic]
-	if !ok {
-		return nil, fmt.Errorf("topic %s not found", topic)
-	}
-
-	tps := make([]kafka.TopicPartition, 0, len(topicMetadata.Partitions))
-	for _, pm := range topicMetadata.Partitions {
-		tps = append(tps, kafka.TopicPartition{
-			Topic:     &topic,
-			Partition: pm.ID,
-			Offset:    -2,
-		})
-	}
-
-	return tps, nil
+	return adminClient.TopicPartitionsForTopic(topic)
 }
 
 // TopicPartitionsForTopicAndTimestamp returns all the topic/partitions with the
@@ -273,120 +231,13 @@ func TopicPartitionsForTopic(conf Config, topic string) ([]kafka.TopicPartition,
 // there are no offsets at or after the given tie, the offset will be set to the
 // high watermark for the partition.
 func TopicPartitionsForTopicAndTimestamp(conf Config, topic string, time time.Time) ([]kafka.TopicPartition, error) {
-	if strings.TrimSpace(topic) == "" {
-		return nil, errors.New("fetch topic partitions failed: topic name is required")
-	}
-
-	conf.init()
-	configMap := adminConfigMap(conf)
-
-	logChan := make(chan kafka.LogEvent, 100)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case logEvent, ok := <-logChan:
-				if !ok {
-					return
-				}
-				conf.Logger.Debug(logEvent.Message,
-					slog.Group("librdkafka",
-						slog.String("name", logEvent.Name),
-						slog.String("tag", logEvent.Tag),
-						slog.Int("level", logEvent.Level)))
-			}
-		}
-	}()
-
-	// Configure logs from librdkafka to be sent to our logger rather than stdout
-	_ = configMap.SetKey("go.logs.channel.enable", true)
-	_ = configMap.SetKey("go.logs.channel", logChan)
-
-	adminClient, err := kafka.NewAdminClient(configMap)
+	adminClient, err := NewAdminClient(conf)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize admin client: %w", err)
+		return nil, err
 	}
 	defer adminClient.Close()
 
-	// A consumer is needed to perform some operations such as querying for offsets
-	// by timestamp and watermarks. Since Consumer requires a group ID we need to
-	// create a dummy value, even if we never use it.
-	_ = configMap.SetKey("group.id", "kefka-admin")
-	consumer, err := kafka.NewConsumer(configMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize consumer: %w", err)
-	}
-	defer consumer.Close() // nolint: errcheck
-
-	metadata, err := adminClient.GetMetadata(&topic, false, 5000)
-	if err != nil {
-		return nil, fmt.Errorf("kafka admin client failed to get metadata: %w", err)
-	}
-
-	topicMetadata, ok := metadata.Topics[topic]
-	if !ok {
-		return nil, fmt.Errorf("topic %s not found", topic)
-	}
-
-	// Because the timestamp could be out of range we need to fetch the watermarks
-	// for each partition to determine the offset to use in the event querying the
-	// OffsetsForTimes returns an offset out of range.
-	watermarks := make(map[string]Watermarks)
-	for _, partition := range topicMetadata.Partitions {
-		low, high, err := consumer.QueryWatermarkOffsets(topic, partition.ID, 3000)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query watermarks for partition %d: %w", partition.ID, err)
-		}
-		key := fmt.Sprintf("%s|%d", topic, partition.ID)
-		watermarks[key] = Watermarks{Low: low, High: high}
-	}
-
-	// Build request for offsets by timestamp
-	timestamp := time.UnixMilli()
-	tps := make([]kafka.TopicPartition, 0, len(topicMetadata.Partitions))
-	for _, partition := range topicMetadata.Partitions {
-		tps = append(tps, kafka.TopicPartition{
-			Topic:     &topicMetadata.Topic,
-			Partition: partition.ID,
-			Offset:    kafka.Offset(timestamp),
-		})
-	}
-
-	offsets, err := consumer.OffsetsForTimes(tps, 5000)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query offsets for times: %w", err)
-	}
-
-	mappedTopicPartitions := make([]kafka.TopicPartition, 0, len(offsets))
-	for _, tp := range offsets {
-		offset := tp.Offset
-		if offset < 0 {
-			offset = kafka.Offset(watermarks[fmt.Sprintf("%s|%d", *tp.Topic, tp.Partition)].High)
-		}
-		mappedTopicPartitions = append(mappedTopicPartitions, kafka.TopicPartition{
-			Topic:     tp.Topic,
-			Partition: tp.Partition,
-			Offset:    offset,
-		})
-	}
-
-	return mappedTopicPartitions, nil
-}
-
-// WatermarksForTopic returns the low and high watermarks for all partitions in
-// a given topic where the key is the partition id -> Watermarks.
-func WatermarksForTopic(conf Config, topic string) (map[int]Watermarks, error) {
-
-}
-
-// WatermarksForTopicPartition returns the low and high watermarks for a given
-// topic and partition.
-func WatermarksForTopicPartition(conf Config, topic string, partition int) (low int64, high int64, err error) {
-
+	return adminClient.TopicPartitionsForTopicAndTimestamp(topic, time)
 }
 
 type Watermarks struct {
