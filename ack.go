@@ -10,7 +10,7 @@ type Ack string
 
 const (
 	// AckNone disables acknowledgements from the brokers. The producer will not
-	// wait for any acknowledgment from the broker and the broker does not wait
+	// wait for any acknowledgement from the broker and the broker does not wait
 	// for the message to be written before it responds.
 	AckNone Ack = "none"
 
