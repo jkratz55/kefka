@@ -326,6 +326,8 @@ func (c *Consumer) Position() ([]kafka.TopicPartition, error) {
 
 // Lag returns the current lag for each partition assigned to the Consumer
 // represented as a map topic|partition -> lag.
+//
+// If the Consumer has no assigned partitions, an empty map is returned.
 func (c *Consumer) Lag() (map[string]int64, error) {
 	lags := make(map[string]int64)
 
@@ -333,6 +335,11 @@ func (c *Consumer) Lag() (map[string]int64, error) {
 	topicPartitions, err := c.base.Assignment()
 	if err != nil {
 		return lags, fmt.Errorf("failed to get assignments for Consumer: %w", err)
+	}
+
+	// Consumer has no assigned partitions
+	if len(topicPartitions) == 0 {
+		return lags, nil
 	}
 
 	// Get the current offset for each partition assigned to the consumer group

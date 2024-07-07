@@ -1,6 +1,6 @@
 # Kefka
 
-Kefka is an opinionated wrapper around the official Confluent Kafka Go client. Kefka offers a higher level API for consuming and producing messages along with offering common functionality such as retries and publishing failed messages to a dead letter topic. The motivation for Kefka came from writing the same boilerplate code over and over. Kefka attempts to abstract away the lower level details of working with the Confluent Kafka Go API and allow developers to focus instead on processing and handling message as part of their business/application logic.
+Kefka is an opinionated wrapper around the official Confluent Kafka Go client. Kefka offers a higher level API for consuming and producing messages along with offering common functionality such as retries and publishing failed messages to a dead letter topic. The motivation for Kefka came from writing the same boilerplate code over and over where I had many microservices utilizing Kafka. Kefka attempts to abstract away the lower level details of working with the Confluent Kafka Go API and allow developers to focus instead on processing and handling message as part of their business/application logic.
 
 The name Kefka comes from Kefka Palazzo, the main antagonist of the critically acclaimed video game Final Fantasy VI.
 
@@ -15,7 +15,7 @@ Kefka offers four main types, each with their own purpose.
 * Producer: Used for producing/publishing messages to Kafka
 * AdminClient: Provides helper methods to work in tangent with Reader to fetch topics and partitions, offsets, watermarks, etc.
 
-## Consumer, Reader, and Handler
+## Handler
 
 At the heart of consuming/reading messages with Kefka is the Handler interface. The Handler interface defines a single method Handle which accepts a message and returns an error. The implementation of Handler supplied to the Consumer or Reader types is responsible for processing and handling messages as they are polled from Kafka. The Handler implementation should perform any validation, business logic, persistence, etc. and then either return nil, if there was no error, or return a non-nil error if an error occurred processing the message. Regardless, the Consumer will store the offsets and continue onwards to the next message but for proper instrumentation and logging it's important to correctly bubble up errors.
 
@@ -26,6 +26,7 @@ type MyHandler struct {
 
 func (mh *MyHandler) Handle(msg *kafka.Message) error {
 	// todo: store message in DB
+	return nil
 }
 ```
 
@@ -40,35 +41,59 @@ Consumer --> Dead Letter Handler --> Retry Handler --> Handler
 
 In the example above, should the handler actually processing the message return an error the retry handler will invoke it again if the returned error is retryable. If the error isn't retryable or all attempts are exhausted, then the dead letter handler would publish the message to the configured dead letter topic.
 
-[//]: # (Kefka is a simple library that wraps the official Confluent Go Kafka library. My motivation for creating this library came from working with so many code bases that needed to either consume and/or produce messages from/to Kafka. I found myself writing a lot of the same code over and over and decided to move it into an open source library. Hopefully other people find it useful.)
+## Consumer vs Reader
 
-[//]: # ()
-[//]: # (Kefka is named after Kefka Palazzo, the main antagonist of the critically acclaimed video game Final Fantasy VI. )
+The Consumer and Reader types similar on the surface but have significant differences and different use cases. A Consumer is a member of a Consumer Group in Kafka and works with other members of the consumer group coordinated by the Kafka brokers. Kafka will assign out partitions based on the members in a consumer group, but at any given time, no more than one consumer will be consuming the same partition. The consumers commit offsets of the messages they've consumed back to the brokers to track the position for which the consumer has processed for each topic/partition.
 
-[//]: # ()
-[//]: # (<p align="center">)
+The Reader type does not leverage consumer groups and directly assigns the configured topic partitions to itself, and reads the messages from those topics partitions. The Reader type never commits the offsets back to the brokers. The Reader type has two primary use cases:
 
-[//]: # (<img src=".resources/80-ffvi37_181.png">)
+1. View/Retrieve the contents of a set of topic partitions
+2. Applications/Microservices that cache the contents of topic in memory and re-reads the entire contents on startup (generally not a good idea)
 
-[//]: # (</p>)
+# Producer
 
-[//]: # ()
-[//]: # (## Usage)
+The Producer in the underlying Confluent Kafka Go library that Kefka wraps is asynchronous. However, Kefka offers both a synchronous and asynchronous API. When using the synchronous API Kefka will handle the delivery report and bubble up any errors that occurred. When using the asynchronous API you must supply a non-nil `chan kafka.Event` and read the delivery reports from the channel if you care about error and ensuring the message was successfully produced. If you provide a nil channel than Kefka operates like the underlying Confluent Kafka client, and it is a fire and forget operation.
 
-[//]: # ()
-[//]: # (At the heart of Kefka are three types:)
+The Producer has two ways to produce messages.
 
-[//]: # ()
-[//]: # (1. Producer - Produces messages to Kafka asynchronously, although it has semantics to emulate producing synchronously. The Producer type also supports automatically marshalling of key and values.)
+1. Use the Produce or ProduceAndWait methods on the Producer type
+2. Use the MessageBuilder 
 
-[//]: # ()
-[//]: # (2. Consumer - Consumes messages from Kafka when using a consumer group. As messages are read/consumed they are handed off to a MessageHandler.)
+The APIs provide the same functionality, so it comes down to personal preference. The MessageBuilder provides a more fluid API which some developers may prefer.
 
-[//]: # ()
-[//]: # (3. Reader - Similar to Consumer type, but the Reader does not support using consumer groups. Reader is meant for use cases where you want to read through specific topics and partitions from a specified offset without any need to coordinate between different consumers. IE its okay for multiple consumers to be reading the same messages.)
+Producer
 
-[//]: # ()
-[//]: # (Kefka also provides some convenient helper functions for handling common tasks for Kafka.)
+```go
+err := producer.ProduceAndWait(&kafka.Message{
+    TopicPartition: kafka.TopicPartition{
+        Topic:     kefka.StringPtr("test"),
+        Partition: kafka.PartitionAny,
+    },
+    Key:   []byte("mykey"),
+    Value: []byte("myvalue"),
+})
+if err != nil {
+// todo: handle error
+}
+```
 
-[//]: # ()
-[//]: # (For examples please refer to the examples directory in this repo.)
+MessageBuilder
+
+```go
+err := producer.M().
+    Topic("test").
+    Key("mykey").
+    JSON(map[string]interface{}{
+        "event": "CREATE_USER",
+    }).
+    SendAndWait()
+if err != nil {
+    // todo: handle error
+}
+```
+
+_Note that Kefka will always set Partition to `PartitionAny`._
+
+## Further Reading
+
+To learn more about Kefka checkout the examples directory in this repository.
