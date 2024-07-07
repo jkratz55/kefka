@@ -2,265 +2,138 @@ package kefka
 
 import (
 	"context"
-	"sync"
+	"fmt"
 	"testing"
+	"time"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/suite"
+
+	"github.com/jkratz55/kefka/v2/internal"
 )
 
-type nopLogger struct{}
-
-func (n nopLogger) Printf(lvl LogLevel, format string, args ...any) {
-	return
+func TestProducerSuite(t *testing.T) {
+	if !internal.IsTestContainersEnabled() {
+		t.Skip("testcontainers not enabled")
+	}
+	suite.Run(t, new(producerTestSuite))
 }
 
-type producerMock struct {
-	mock.Mock
+type producerTestSuite struct {
+	suite.Suite
+
+	kafkaContainer *internal.KafkaContainer
+	producer       *Producer
 }
 
-func (p *producerMock) Close() {}
+func (s *producerTestSuite) SetupSuite() {
+	ctx := context.Background()
+	kafkaContainer, err := initKafkaTestContainer(ctx)
+	s.Require().NoError(err)
+	s.kafkaContainer = kafkaContainer
 
-func (p *producerMock) Events() chan kafka.Event {
-	args := p.Called()
-	return args.Get(0).(chan kafka.Event)
+	brokers, err := kafkaContainer.Brokers(ctx)
+	s.Require().NoError(err)
+
+	producer, err := NewProducer(Config{
+		BootstrapServers: brokers,
+		RequiredAcks:     AckLeader,
+		Logger:           NopLogger(),
+	})
+	s.Require().NoError(err)
+	s.producer = producer
 }
 
-func (p *producerMock) Flush(timeoutMs int) int {
-	args := p.Called(timeoutMs)
-	return args.Get(0).(int)
+func (s *producerTestSuite) TearDownSuite() {
+	remaining := s.producer.Flush(time.Second * 5)
+	s.Require().Equal(0, remaining)
+	s.producer.Close()
+	s.Require().Equal(true, s.producer.IsClosed())
+
+	if err := s.kafkaContainer.Terminate(context.Background()); err != nil {
+		s.FailNow(err.Error())
+	}
 }
 
-func (p *producerMock) Produce(msg *kafka.Message, deliveryChan chan kafka.Event) error {
-	args := p.Called(msg, deliveryChan)
+func (s *producerTestSuite) TestProducer_Produce() {
+	topic := "test"
+	msg := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     &topic,
+			Partition: kafka.PartitionAny,
+		},
+		Value: []byte("world"),
+		Key:   []byte("hello"),
+	}
 
-	if deliveryChan != nil {
-		deliveryChan <- &kafka.Message{
+	ch := make(chan kafka.Event)
+	err := s.producer.Produce(msg, ch)
+	s.Require().NoError(err)
+
+	e := <-ch
+	switch ev := e.(type) {
+	case *kafka.Message:
+		s.Require().NoError(ev.TopicPartition.Error)
+		s.Require().Equal("test", *ev.TopicPartition.Topic)
+		s.Require().Equal([]byte("hello"), ev.Key)
+		s.Require().Equal([]byte("world"), ev.Value)
+	default:
+		s.Error(fmt.Errorf("unexpected kafka event: %T", e))
+	}
+}
+
+func (s *producerTestSuite) TestProducer_ProduceAndWait() {
+	topic := "test"
+	msg := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     &topic,
+			Partition: kafka.PartitionAny,
+		},
+		Value: []byte("world"),
+		Key:   []byte("hello"),
+	}
+
+	err := s.producer.ProduceAndWait(msg)
+	s.Require().NoError(err)
+}
+
+func (s *producerTestSuite) TestProducer_Transactional() {
+
+	// Transactions requires a different Producer configuration
+	brokers, err := s.kafkaContainer.Brokers(context.Background())
+	s.Require().NoError(err)
+
+	producer, err := NewProducer(Config{
+		BootstrapServers: brokers,
+		RequiredAcks:     AckAll,
+		Logger:           NopLogger(),
+		Idempotence:      true,
+		TransactionID:    uuid.New().String(),
+	})
+	s.Require().NoError(err)
+	s.producer = producer
+
+	topic := "test"
+	messages := []*kafka.Message{
+		{
 			TopicPartition: kafka.TopicPartition{
-				Topic:     msg.TopicPartition.Topic,
-				Partition: msg.TopicPartition.Partition,
-				Offset:    1,
-				Error:     nil,
+				Topic:     &topic,
+				Partition: kafka.PartitionAny,
 			},
-		}
+			Value: []byte("world"),
+			Key:   []byte("hello"),
+		},
+		{
+			TopicPartition: kafka.TopicPartition{
+				Topic:     &topic,
+				Partition: kafka.PartitionAny,
+			},
+			Value: []byte("world"),
+			Key:   []byte("hello"),
+		},
 	}
 
-	if args.Get(0) == nil {
-		return nil
-	}
-	return args.Get(0).(error)
-}
-
-func TestNewProducer(t *testing.T) {
-
-	// todo: This is testing only the happy path and isn't testing if the function
-	// 	panic from misuse or if creating the base confluent kafka producer fails.
-	//  These are edge case but should still be tested.
-
-	opts := ProducerOptions{
-		KafkaConfig: &kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"client.id":         uuid.New().String(),
-			"acks":              "all",
-			"retries":           5,
-		},
-		KeyMarshaller:   StringMarshaller(),
-		ValueMarshaller: JsonMarshaller(),
-		Logger:          nopLogger{},
-	}
-
-	var prodcuer *Producer
-	var err error
-	assert.NotPanics(t, func() {
-		prodcuer, err = NewProducer(opts)
-		assert.NoError(t, err)
-		assert.NotNil(t, prodcuer)
-	})
-}
-
-func TestProducer_Produce(t *testing.T) {
-
-	opts := ProducerOptions{
-		KafkaConfig: &kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"client.id":         uuid.New().String(),
-			"acks":              "all",
-			"retries":           5,
-		},
-		KeyMarshaller:   StringMarshaller(),
-		ValueMarshaller: JsonMarshaller(),
-		Logger:          nopLogger{},
-	}
-	producer, err := NewProducer(opts)
-	assert.NoError(t, err)
-
-	eventChan := make(chan kafka.Event, 1)
-	baseProducer := new(producerMock)
-	baseProducer.On("Events").Return(eventChan)
-	baseProducer.On("Produce", mock.Anything, mock.Anything).Return(nil)
-	producer.baseProducer = baseProducer // replace internal Kafka Producer with mock
-
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-		report := <-eventChan
-		m := report.(*kafka.Message)
-		assert.NoError(t, m.TopicPartition.Error)
-	}()
-
-	err = producer.Produce("test", "billy", "bob", eventChan)
-	assert.NoError(t, err)
-
-	wg.Wait()
-}
-
-func TestProducer_ProduceMessage(t *testing.T) {
-	opts := ProducerOptions{
-		KafkaConfig: &kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"client.id":         uuid.New().String(),
-			"acks":              "all",
-			"retries":           5,
-		},
-		KeyMarshaller:   StringMarshaller(),
-		ValueMarshaller: JsonMarshaller(),
-		Logger:          nopLogger{},
-	}
-	producer, err := NewProducer(opts)
-	assert.NoError(t, err)
-
-	eventChan := make(chan kafka.Event, 1)
-	baseProducer := new(producerMock)
-	baseProducer.On("Events").Return(eventChan)
-	baseProducer.On("Produce", mock.Anything, mock.Anything).Return(nil)
-	producer.baseProducer = baseProducer // replace internal Kafka Producer with mock
-
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-		report := <-eventChan
-		m := report.(*kafka.Message)
-		assert.NoError(t, m.TopicPartition.Error)
-	}()
-
-	topic := "test"
-	err = producer.ProduceMessage(&kafka.Message{
-		TopicPartition: kafka.TopicPartition{
-			Topic:     &topic,
-			Partition: kafka.PartitionAny,
-		},
-		Value: []byte("Hello World!"),
-		Key:   []byte("KEY"),
-	}, eventChan)
-	assert.NoError(t, err)
-
-	wg.Wait()
-}
-
-func TestProducer_SyncProduce(t *testing.T) {
-	opts := ProducerOptions{
-		KafkaConfig: &kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"client.id":         uuid.New().String(),
-			"acks":              "all",
-			"retries":           5,
-		},
-		KeyMarshaller:   StringMarshaller(),
-		ValueMarshaller: JsonMarshaller(),
-		Logger:          nopLogger{},
-	}
-	producer, err := NewProducer(opts)
-	assert.NoError(t, err)
-
-	eventChan := make(chan kafka.Event, 1)
-	baseProducer := new(producerMock)
-	baseProducer.On("Events").Return(eventChan)
-	baseProducer.On("Produce", mock.Anything, mock.Anything).Return(nil)
-	producer.baseProducer = baseProducer // replace internal Kafka Producer with mock
-
-	err = producer.SyncProduce(context.Background(), "test", "hello", "world")
-	assert.NoError(t, err)
-}
-
-func TestProducer_SyncProduceMessage(t *testing.T) {
-	opts := ProducerOptions{
-		KafkaConfig: &kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"client.id":         uuid.New().String(),
-			"acks":              "all",
-			"retries":           5,
-		},
-		KeyMarshaller:   StringMarshaller(),
-		ValueMarshaller: JsonMarshaller(),
-		Logger:          nopLogger{},
-	}
-	producer, err := NewProducer(opts)
-	assert.NoError(t, err)
-
-	eventChan := make(chan kafka.Event, 1)
-	baseProducer := new(producerMock)
-	baseProducer.On("Events").Return(eventChan)
-	baseProducer.On("Produce", mock.Anything, mock.Anything).Return(nil)
-	producer.baseProducer = baseProducer // replace internal Kafka Producer with mock
-
-	topic := "test"
-	err = producer.SyncProduceMessage(context.Background(), &kafka.Message{
-		TopicPartition: kafka.TopicPartition{
-			Topic:     &topic,
-			Partition: kafka.PartitionAny,
-		},
-		Value: []byte("Hello World!"),
-		Key:   []byte("KEY"),
-	})
-	assert.NoError(t, err)
-}
-
-func TestProducer_Close(t *testing.T) {
-	opts := ProducerOptions{
-		KafkaConfig: &kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"client.id":         uuid.New().String(),
-			"acks":              "all",
-			"retries":           5,
-		},
-		KeyMarshaller:   StringMarshaller(),
-		ValueMarshaller: JsonMarshaller(),
-		Logger:          nopLogger{},
-	}
-	producer, err := NewProducer(opts)
-	assert.NoError(t, err)
-
-	baseProducer := new(producerMock)
-	baseProducer.On("Close").Return()
-
-	producer.baseProducer = baseProducer
-	producer.Close()
-}
-
-func TestProducer_Flush(t *testing.T) {
-	opts := ProducerOptions{
-		KafkaConfig: &kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"client.id":         uuid.New().String(),
-			"acks":              "all",
-			"retries":           5,
-		},
-		KeyMarshaller:   StringMarshaller(),
-		ValueMarshaller: JsonMarshaller(),
-		Logger:          nopLogger{},
-	}
-	producer, err := NewProducer(opts)
-	assert.NoError(t, err)
-
-	baseProducer := new(producerMock)
-	baseProducer.On("Flush", mock.Anything).Return(0)
-
-	producer.baseProducer = baseProducer
-	producer.Flush(10000)
+	err = s.producer.Transactional(context.Background(), messages)
+	s.Require().NoError(err)
 }

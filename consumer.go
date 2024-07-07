@@ -1,722 +1,467 @@
 package kefka
 
 import (
-	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
-	"github.com/jkratz55/slices"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
-const (
-	// DefaultPollTimeout is the default timeout when polling events from Kafka.
-	DefaultPollTimeout = time.Second * 10
-)
-
-type kafkaConsumer interface {
-	MetadataClient
-	Assignment() (partitions []kafka.TopicPartition, err error)
-	Close() error
-	Commit() ([]kafka.TopicPartition, error)
-	Logs() chan kafka.LogEvent
+// baseConsumer is an interface type that defines the behavior and functionality of
+// Kafka client Consumer. This interface exists to allow for mocking and testing.
+type baseConsumer interface {
+	Assignment() ([]kafka.TopicPartition, error)
+	Subscription() (topics []string, err error)
+	Committed(partitions []kafka.TopicPartition, timeoutMs int) (offsets []kafka.TopicPartition, err error)
+	QueryWatermarkOffsets(topic string, partition int32, timeoutMs int) (low, high int64, err error)
+	Subscribe(topics string, rebalanceCb kafka.RebalanceCb) error
 	Poll(timeoutMs int) (event kafka.Event)
-	ReadMessage(timeout time.Duration) (*kafka.Message, error)
-	Subscribe(topic string, rebalanceCb kafka.RebalanceCb) error
+	CommitMessage(msg *kafka.Message) ([]kafka.TopicPartition, error)
+	StoreMessage(msg *kafka.Message) (storedOffsets []kafka.TopicPartition, err error)
+	Commit() ([]kafka.TopicPartition, error)
+	Position(partitions []kafka.TopicPartition) (offsets []kafka.TopicPartition, err error)
+	IsClosed() bool
+	Close() error
 }
 
-// ErrorCallback is a function that is invoked with an error value when an error
-// occurs processing messages from Kafka.
-type ErrorCallback func(err error)
+// Ensures that the kafka.Consumer implements all methods defined by the baseConsumer interface.
+var _ baseConsumer = &kafka.Consumer{}
 
-// MessageHandler is a type that handles/processes messages from Kafka.
+// Consumer is a type that provides a high-level API for consuming messages from
+// Kafka.
 //
-// Implementations of MessageHandler are expected to perform all processing and
-// business logic around the received message. Implementations of MessageHandler
-// should handle any and all retry logic, error handling, etc. A MessageHandler
-// can return an error but the error is ignored by the underlying Consumer and
-// Reader types. However, it does allow a MessageHandler to be wrapped to handle
-// errors and retries in an elegant way.
-//
-// Implementations of MessageHandler should call the Commit function when using
-// manual/synchronous commits with Kafka. Otherwise, it should not be called as
-// it can have negative impacts on throughput/performance.
-type MessageHandler interface {
-	Handle(msg *kafka.Message, ack Commit) error
-}
-
-// MessageHandlerFunc is a convenient way to satisfy the MessageHandler interface
-// without creating a type.
-//
-// See MessageHandler for more details.
-type MessageHandlerFunc func(msg *kafka.Message, ack Commit) error
-
-func (m MessageHandlerFunc) Handle(msg *kafka.Message, ack Commit) error {
-	return m(msg, ack)
-}
-
-// CancelFunc is a function used to cancel Consumer operations
-type CancelFunc func()
-
-// Commit is a function that commits the offsets to Kafka synchronously. Using
-// synchronous writes can significantly impact throughput and should be used
-// sparingly.
-//
-// If using auto commit there is no need to invoke this function.
-type Commit func()
-
-// ConsumerOptions contains the configuration options to instantiate and initialize
-// a Consumer.
-//
-// Note: Some of the fields are required and will cause a panic. Take note of the GoDoc
-// comments for each of the fields in the struct.
-type ConsumerOptions struct {
-
-	// The Kafka configuration that is used to create the underlying Confluent Kafka
-	// Consumer type. This is a required field. A zero value (nil) will cause a panic.
-	KafkaConfig *kafka.ConfigMap
-
-	// The handler that will be handed the message from Kafka and process it. This is
-	// a required field. A zero value (nil) will cause a panic.
-	Handler MessageHandler
-
-	// The topic to consume. This is a required field. A zero value ("") will cause
-	// a panic.
-	Topic string
-
-	// Configures the timeout polling messages from Kafka. This field is optional.
-	// If the zero-value is provided DefaultPollTimeout will be used.
-	PollTimeout time.Duration
-
-	// An optional callback that is invoked when an error occurs polling/reading
-	// messages from Kafka.
-	//
-	// While optional, it is highly recommended to provide an ErrorCallback.
-	// Otherwise, errors from the underlying Confluent Kafka Consumer are discarded.
-	// Ideally, these errors should be logged and/or capture metrics.
-	ErrorHandler ErrorCallback
-
-	// Allows plugging in a third party Logger. By default, the Logger from the
-	// standard library will be used if one is not provided at INFO level.
-	Logger Logger
-}
-
-// Consumer is a type for consumer messages from Kafka.
-//
-// Under the hood Consumer uses Confluent Kafka consumer type. Consumer is in
-// essence a wrapper around the Confluent Kafka Go library.
-//
-// The zero value of Consumer is not usable. Instances of Consumer should be
-// created using the NewConsumer function.
-//
-// The Consumer type is only meant to be used when using Kafka consumer groups.
-// If not using Consumer groups use the Reader type instead. The `group.id`
-// property must be set in the Kafka ConfigMap.
-//
-// The Kafka configuration provided is very important to the behavior of the
-// Consumer. The Consumer type does not support all the features of the underlying
-// Confluent Kafka client. It does however, support manual commits if that behavior
-// is required. The MessageHandler accepts a Kafka message and a Commit func. If
-// auto commits are disabled the caller must invoke the Commit function when they
-// want to commit offsets back to Kafka. If auto commits are on the Commit function
-// can be ignored. In fact, it should not be called at all if using auto commits.
+// Consumer is a thin abstraction over the official Confluent Kafka Go client
+// and provides a simplified API for consuming messages from Kafka. The Consumer
+// invokes a Handler for each message received from Kafka that processes the
+// message. Regardless of the outcome of the Handler, the Consumer will store/commit
+// the offsets back to the brokers and continue processing events/messages. Any
+// retry logic or error handling should be implemented in the Handler or by wrapping
+// a Handler using middleware/decorators. Kefka provides Retry and DeadLetter middleware
+// that can be used to implement retry logic and dead letter queues. Since Handler
+// an interface, it is easy to implement custom middleware to extend the functionality.
 type Consumer struct {
-	baseConsumer kafkaConsumer
-	handler      MessageHandler
-	pollTimeout  time.Duration
-	errorHandler ErrorCallback
-	topic        string
-	logger       Logger
-
-	running bool
-	termCh  chan struct{}
+	base               baseConsumer
+	handler            Handler
+	topic              string
+	running            bool
+	mu                 sync.Mutex
+	logger             *slog.Logger
+	commitEveryMessage bool
+	pollTimeout        int
+	conf               Config
+	stopChan           chan struct{}
 }
 
-// NewConsumer creates and initializes a new instance of the Consumer type.
-//
-// If the API is misused (missing required fields, not setting group.id in
-// the Kafka config, etc.) this function will panic. If the Consumer cannot
-// be created with the provided configuration or subscribing to the provided
-// topic fails a non-nil error value will be returned.
-func NewConsumer(opts ConsumerOptions) (*Consumer, error) {
-	// Sanity check on API usage, these are required fields and documented as such.
-	// If the API is being misused or not provided the documented required properties
-	// just panic.
-	if opts.KafkaConfig == nil {
-		panic("Kafka ConfigMap is required, illegal use of API")
+// NewConsumer creates and initializes a new Kafka Consumer.
+func NewConsumer(conf Config, handler Handler, topic string) (*Consumer, error) {
+	if handler == nil {
+		return nil, errors.New("invalid config: cannot initialize Consumer with nil Handler")
 	}
-	if opts.Handler == nil {
-		panic("MessageHandler is required, illegal use of API")
-	}
-	if opts.Topic == "" {
-		panic("Topic is required, illegal use of API")
-	}
-	if groupId, _ := opts.KafkaConfig.Get("group.id", ""); groupId == "" {
-		panic("group.id is a required property in the Kafka configuration")
+	if strings.TrimSpace(topic) == "" {
+		return nil, errors.New("invalid config: cannot initialize Consumer with empty topic")
 	}
 
-	// Use sane defaults if properties/fields not provided.
-	if opts.PollTimeout == 0 {
-		opts.PollTimeout = DefaultPollTimeout
-	}
-	// Create a default logger if one was not provided
-	if opts.Logger == nil {
-		opts.Logger = defaultLogger()
-	}
+	conf.init()
 
-	// Always override logging config to prevent logs from being sent to stderr/stdout
-	_ = opts.KafkaConfig.SetKey("go.logs.channel.enable", true)
+	configMap := consumerConfigMap(conf)
 
-	baseConsumer, err := kafka.NewConsumer(opts.KafkaConfig)
+	stopChan := make(chan struct{})
+	logChan := make(chan kafka.LogEvent, 1000)
+
+	// Start goroutine to read logs from librdkafka and uses slog.Logger to log
+	// them rather than dumping them to stdout
+	go func(logger *slog.Logger) {
+		for {
+			select {
+			case logEvent, ok := <-logChan:
+				if !ok {
+					return
+				}
+				logger.Debug(logEvent.Message,
+					slog.Group("librdkafka",
+						slog.String("name", logEvent.Name),
+						slog.String("tag", logEvent.Tag),
+						slog.Int("level", logEvent.Level)))
+			case <-stopChan:
+				return
+			}
+		}
+	}(conf.Logger)
+
+	// Configure logs from librdkafka to be sent to our logger rather than stdout
+	_ = configMap.SetKey("go.logs.channel.enable", true)
+	_ = configMap.SetKey("go.logs.channel", logChan)
+
+	// If KEFKA_DEBUG is enabled print the Kafka configuration to stdout for
+	// debugging/troubleshooting purposes.
+	if ok, _ := strconv.ParseBool(os.Getenv("KEFKA_DEBUG")); ok {
+		printConfigMap(configMap)
+	}
+	conf.Logger.Info("Initializing Kafka Consumer",
+		slog.Any("config", obfuscateConfig(configMap)))
+
+	base, err := kafka.NewConsumer(configMap)
 	if err != nil {
-		return nil, fmt.Errorf("unable to create Confluent Kafka Consumer with provided config: %w", err)
-	}
-	err = baseConsumer.Subscribe(opts.Topic, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to subscribe to topic %s: %w", opts.Topic, err)
+		return nil, fmt.Errorf("kafka: failed to initialize Confluent Kafka Consumer: %w", err)
 	}
 
 	consumer := &Consumer{
-		baseConsumer: baseConsumer,
-		handler:      opts.Handler,
-		pollTimeout:  opts.PollTimeout,
-		errorHandler: opts.ErrorHandler,
-		topic:        opts.Topic,
-		logger:       opts.Logger,
-		running:      false,
-		termCh:       make(chan struct{}),
+		base:               base,
+		handler:            handler,
+		topic:              topic,
+		running:            false,
+		mu:                 sync.Mutex{},
+		logger:             conf.Logger,
+		commitEveryMessage: conf.CommitInterval < 0,
+		pollTimeout:        int(conf.PollTimeout.Milliseconds()),
+		conf:               conf,
+		stopChan:           stopChan,
 	}
 	return consumer, nil
 }
 
-// Consume begins polling Kafka for messages/events passing the read messages off
-// to the provided MessageHandler.
-//
-// This function is blocking and in most use cases it should be called in a
-// separate goroutine. It will continue to run until Close is called or the
-// program exits.
-func (c *Consumer) Consume() {
-	if c.running {
-		c.logger.Printf(WarnLevel, "Consumer already running, call to Consumer is a no-op")
-		return
+// Run starts polling events from Kafka and consuming/processing messages. Run
+// is blocking and will continue to run until the Consumer is closed or encounters
+// a fatal error. In almost all use cases Run should be invoked in a new goroutine.
+// If the Consumer is gracefully closed Run should return a nil error value, unless
+// it fails to commit offsets or close the underlying Confluent Kafka client.
+func (c *Consumer) Run() error {
+
+	// Try to acquire the lock to ensure Run cannot be invoked more than once on
+	// the same Consumer instance. If the lock cannot be acquired, return an error
+	// as that means the Consumer is already running.
+	if ok := c.mu.TryLock(); !ok {
+		return fmt.Errorf("unsupported operation: cannot invoke Run() on an already running Consumer")
 	}
+	defer c.mu.Unlock()
+
+	// Once a Consumer is closed it cannot be reused.
+	if c.base.IsClosed() {
+		return errors.New("unsupported operation: cannot invoke Run() on a closed Consumer")
+	}
+
+	err := c.base.Subscribe(c.topic, c.rebalanceCb)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to topic %s: %w", c.topic, err)
+	}
+	c.logger.Debug(fmt.Sprintf("Subscribed to topic %s", c.topic))
+
 	c.running = true
 
-	go func() {
-		for log := range c.baseConsumer.Logs() {
-			c.logger.Printf(InfoLevel, "[%s]-[%s] %s", log.Name, log.Tag, log.Message)
-		}
-	}()
+	// Event loop that continuously polls the brokers for new events and handles
+	// them accordingly. The loop will continue to run until the Consumer is closed
+	// or encounters a fatal error.
+	for c.running {
+		rawEvent := c.base.Poll(c.pollTimeout)
 
-	for {
-		select {
-		case <-c.termCh:
-			return
-		default:
-			c.readMessage()
+		switch event := rawEvent.(type) {
+		case kafka.Error:
+
+			// Handle the error event polled from Kafka. The handleError method
+			// will only bubble up an error if Confluent Kafka Go/librdkafka client
+			// returns a fatal error indicating the Consumer cannot continue. In this
+			// case the consumer attempts to commit the offsets back to Kafka, but it
+			// is unlikely to succeed. The Consumer is then closed and the error is
+			// bubbled up to the caller to indicate the Consumer has unexpectedly
+			// stopped due to a fatal error and cannot continue.
+			if err := c.handleError(event); err != nil {
+				c.running = false
+				_, _ = c.base.Commit()
+				_ = c.base.Close()
+				c.stopChan <- struct{}{}
+				return err
+			}
+
+		case *kafka.Message:
+			c.handleMessage(event)
+
+		case kafka.OffsetsCommitted:
+			c.handleOffsetsCommitted(event)
 		}
 	}
+
+	// The Consumer was gracefully closed using Close() method. Commit any offsets
+	// that have not been committed yet, and close the underlying Confluent Kafka
+	// client to release resources. Any errors that occur during the commit or close
+	// will be bubbled up to the caller.
+	var closeErr error
+	if _, err := c.base.Commit(); err != nil {
+		closeErr = err
+	}
+	if err := c.base.Close(); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+
+	// Signal to the goroutine processing logs to stop
+	c.stopChan <- struct{}{}
+	return closeErr
 }
 
-// Assignments fetches and returns the currently assigned topics and partitions
-// for the Consumer.
-func (c *Consumer) Assignments() ([]kafka.TopicPartition, error) {
-	return c.baseConsumer.Assignment()
-}
-
-// Lag calculates the lag for each topic/partition assigned to the Consumer.
+// handleError handles error events returned by Kafka
 //
-// Note: It does not calculate the lag for entire consumer group if there are
-// other consumers in the group.
-func (c *Consumer) Lag() (map[string]int64, error) {
-	assignments, err := c.Assignments()
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch assignments: %w", err)
+// handleError will simply log and increment metrics for non-fatal error but will
+// propagate fatal errors to the caller.
+func (c *Consumer) handleError(err kafka.Error) error {
+	consumerKafkaErrors.WithLabelValues(err.Code().String()).Inc()
+	// If an error callback is provided invoke it with the error
+	if c.conf.OnError != nil {
+		c.conf.OnError(err)
+	}
+	c.logger.Error("Kafka returned an error while polling for events",
+		slog.String("err", err.Error()),
+		slog.Int("code", int(err.Code())),
+		slog.Bool("fatal", err.IsFatal()),
+		slog.Bool("retryable", err.IsRetriable()),
+		slog.Bool("timeout", err.IsTimeout()))
+
+	// If the error is fatal there is no point in continuing to run the Consumer.
+	// An error is bubbled up to the caller to indicate to the Consumer has stopped
+	// due to a fatal error.
+	if err.IsFatal() {
+		return fmt.Errorf("kafka client fatal error: %w", err)
 	}
 
-	committed, err := c.baseConsumer.Committed(assignments, 5000)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch committed offsets: %w", err)
-	}
+	return nil
+}
 
-	lag := make(map[string]int64)
-	for i := range committed {
-		low, high, err := c.baseConsumer.QueryWatermarkOffsets(*committed[i].Topic, committed[i].Partition, 5000)
+// handleMessage handles messages received from Kafka.
+func (c *Consumer) handleMessage(msg *kafka.Message) {
+	start := time.Now()
+	err := c.handler.Handle(msg)
+	duration := time.Since(start).Seconds()
+	status := statusSuccess
+
+	if err != nil {
+		consumerMessagesFailed.WithLabelValues(*msg.TopicPartition.Topic).Inc()
+		c.logger.Error("Failed to process message: handler returned a error",
+			consumerSlogAttrs(msg, err)...)
+		status = statusError
+	}
+	consumerMessagesProcessed.WithLabelValues(*msg.TopicPartition.Topic).Inc()
+	consumerHandlerDuration.WithLabelValues(*msg.TopicPartition.Topic, status).Observe(duration)
+
+	// If the Consumer is configured to commit offsets after every message
+	// commit the offset for the message. Otherwise, the offset is stored
+	// and the offsets are committed based on the configured commit interval.
+	if c.commitEveryMessage {
+		_, err := c.base.CommitMessage(msg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query watermark offsets: %w", err)
+			consumerCommitOffsetErrors.
+				WithLabelValues(*msg.TopicPartition.Topic, strconv.Itoa(int(msg.TopicPartition.Partition))).
+				Inc()
+			// If an error callback is provided invoke it with the error
+			if c.conf.OnError != nil {
+				c.conf.OnError(err)
+			}
+			c.logger.Error("Failed to commit offset for message",
+				consumerSlogAttrs(msg, err)...)
+		}
+	} else {
+		_, err := c.base.StoreMessage(msg)
+		if err != nil {
+			consumerStoreOffsetErrors.
+				WithLabelValues(*msg.TopicPartition.Topic, strconv.Itoa(int(msg.TopicPartition.Partition))).
+				Inc()
+			// If an error callback is provided invoke it with the error
+			if c.conf.OnError != nil {
+				c.conf.OnError(err)
+			}
+			c.logger.Error("Failed to acknowledge message and store offsets",
+				consumerSlogAttrs(msg, err)...)
+		}
+	}
+}
+
+// handleOffsetsCommitted handles offsets committed events returned by Kafka
+func (c *Consumer) handleOffsetsCommitted(offsets kafka.OffsetsCommitted) {
+	for _, tp := range offsets.Offsets {
+		if tp.Error != nil {
+			consumerCommitOffsetErrors.WithLabelValues(*tp.Topic, strconv.Itoa(int(tp.Partition))).Inc()
+			if c.conf.OnError != nil {
+				c.conf.OnError(tp.Error)
+			}
+			c.logger.Error("Failed to commit offset to Kafka brokers",
+				slog.String("err", tp.Error.Error()),
+				slog.String("topic", *tp.Topic),
+				slog.Int("partition", int(tp.Partition)),
+				slog.Int64("offset", int64(tp.Offset)))
+		} else {
+			consumerOffsetsCommited.WithLabelValues(*tp.Topic, strconv.Itoa(int(tp.Partition))).Inc()
+			c.logger.Debug("Successfully committed offset to Kafka brokers",
+				slog.String("topic", *tp.Topic),
+				slog.Int("partition", int(tp.Partition)),
+				slog.Int64("offset", int64(tp.Offset)))
+		}
+	}
+}
+
+// Assignment returns the current partition assignments for the Consumer.
+func (c *Consumer) Assignment() (kafka.TopicPartitions, error) {
+	return c.base.Assignment()
+}
+
+// Subscription returns the topics the Consumer is currently subscribed to.
+func (c *Consumer) Subscription() ([]string, error) {
+	return c.base.Subscription()
+}
+
+// Position returns the current consume position for the currently assigned partitions.
+// The consume position is the next message to read from the partition. i. e., the offset
+// of the last message seen by the application + 1.
+func (c *Consumer) Position() ([]kafka.TopicPartition, error) {
+
+	// Get the current assigned partitions for the Consumer
+	topicPartitions, err := c.base.Assignment()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get assignments for Consumer: %w", err)
+	}
+	return c.base.Position(topicPartitions)
+}
+
+// Lag returns the current lag for each partition assigned to the Consumer
+// represented as a map topic|partition -> lag.
+//
+// If the Consumer has no assigned partitions, an empty map is returned.
+func (c *Consumer) Lag() (map[string]int64, error) {
+	lags := make(map[string]int64)
+
+	// Get the current assigned partitions for the Consumer
+	topicPartitions, err := c.base.Assignment()
+	if err != nil {
+		return lags, fmt.Errorf("failed to get assignments for Consumer: %w", err)
+	}
+
+	// Consumer has no assigned partitions
+	if len(topicPartitions) == 0 {
+		return lags, nil
+	}
+
+	// Get the current offset for each partition assigned to the consumer group
+	topicPartitions, err = c.base.Committed(topicPartitions, 5000)
+	if err != nil {
+		return lags, fmt.Errorf("failed to get commited offsets: %w", err)
+	}
+
+	// Iterate over each partition and query for the watermarks. The lag is determined by
+	// the difference between the high watermark and the current offset.
+	for _, tp := range topicPartitions {
+		low, high, err := c.base.QueryWatermarkOffsets(*tp.Topic, tp.Partition, 5000)
+		if err != nil {
+			return lags, fmt.Errorf("failed to get watermark offsets for partition %d of topic %s", tp.Partition, *tp.Topic)
 		}
 
-		offset := int64(committed[i].Offset)
-		if committed[i].Offset == kafka.OffsetInvalid {
+		offset := int64(tp.Offset)
+		if tp.Offset == kafka.OffsetInvalid {
 			offset = low
 		}
-		topic := *committed[i].Topic
-		partition := strconv.Itoa(int(committed[i].Partition))
-		lag[topic+"|"+partition] = high - offset
+
+		key := *tp.Topic + "|" + strconv.Itoa(int(tp.Partition))
+		lags[key] = high - offset
 	}
-	return lag, nil
+
+	return lags, nil
 }
 
-// LagForTopicPartition returns the current lag of the Consumer for a specific
-// topic/partition.
-func (c *Consumer) LagForTopicPartition(topic string, partition int) (int64, error) {
-	return LagForTopicPartition(c.baseConsumer, topic, partition)
+// Commit commits the current offsets for the Consumer.
+func (c *Consumer) Commit() error {
+	_, err := c.base.Commit()
+	return err
 }
 
-// Close stops polling messages/events from Kafka and cleans up resources including
-// calling Close on the underlying Confluent Kafka consumer. Once Close has been
-// called the instance of Consumer is no longer usable.
-//
-// This function should only be called once.
-func (c *Consumer) Close() error {
-	if c.running {
-		c.running = false
-		c.termCh <- struct{}{}
+// Close gracefully closes the Consumer and releases any resources. After Close
+// is called the Consumer cannot be reused.
+func (c *Consumer) Close() {
+	c.running = false
+}
+
+// IsRunning returns true if the Consumer is currently running, otherwise false.
+func (c *Consumer) IsRunning() bool {
+	return c.running
+}
+
+// IsClosed returns true if the Consumer is closed, otherwise false.
+func (c *Consumer) IsClosed() bool {
+	return c.base.IsClosed()
+}
+
+// rebalanceCb is a callback function that is invoked when Kafka rebalances the
+// group. This callback is only used for logging and metrics purposes.
+func (c *Consumer) rebalanceCb(_ *kafka.Consumer, event kafka.Event) error {
+	consumerRebalances.WithLabelValues(c.topic).Inc()
+	switch e := event.(type) {
+	case kafka.AssignedPartitions:
+		c.logger.Info("Consumer group rebalanced: assigned partitions",
+			slog.Any("assignments", e.Partitions))
+	case kafka.RevokedPartitions:
+		c.logger.Info("Consumer group rebalanced: revoking partitions",
+			slog.Any("assignments", e.Partitions))
 	}
-	return c.baseConsumer.Close()
+
+	return nil
 }
 
-func (c *Consumer) readMessage() {
-	msg, err := c.baseConsumer.ReadMessage(c.pollTimeout)
-	if err != nil {
-		switch e := err.(type) {
-		case kafka.Error:
-			if e.Code() == kafka.ErrTimedOut {
-				// Ignore if timeout polling from Kafka. This is expected if there
-				// are no new events/messages.
-				return
-			}
-			c.logger.Printf(ErrorLevel, "error polling from Kafka: %s Code: %d", e.Error(), e.Code())
-		default:
-			c.logger.Printf(ErrorLevel, "error polling from Kafka: %s", err)
+// consumerConfigMap maps the configuration to the ConfigMap the Confluent Kafka
+// Go client expects.
+func consumerConfigMap(conf Config) *kafka.ConfigMap {
+	// Configure base properties/parameters
+	configMap := &kafka.ConfigMap{
+		"bootstrap.servers":                  strings.Join(conf.BootstrapServers, ","),
+		"group.id":                           conf.GroupID,
+		"session.timeout.ms":                 int(conf.SessionTimeout.Milliseconds()),
+		"heartbeat.interval.ms":              int(conf.HeartbeatInterval.Milliseconds()),
+		"auto.offset.reset":                  conf.AutoOffsetReset.String(),
+		"enable.auto.offset.store":           false,
+		"auto.commit.interval.ms":            int(conf.CommitInterval.Milliseconds()),
+		"security.protocol":                  conf.SecurityProtocol.String(),
+		"message.max.bytes":                  conf.MessageMaxBytes,
+		"fetch.max.bytes":                    conf.MaxFetchBytes,
+		"topic.metadata.refresh.interval.ms": 300000,
+		"connections.max.idle.ms":            600000,
+	}
+
+	// If SSL is enabled any additional SSL configuration provided needs added
+	// to the configmap
+	if conf.SecurityProtocol == Ssl || conf.SecurityProtocol == SaslSsl {
+		if conf.CertificateAuthorityLocation != "" {
+			_ = configMap.SetKey("ssl.ca.location", conf.CertificateAuthorityLocation)
 		}
-		c.errorHandler(err)
-		return
-	}
-	ack := func() {
-		if _, err := c.baseConsumer.Commit(); err != nil && c.errorHandler != nil {
-			c.logger.Printf(ErrorLevel, "error committing offset to Kafka, Topic %s Partition %d Offset %d Err %s",
-				*msg.TopicPartition.Topic, msg.TopicPartition.Partition, msg.TopicPartition.Offset, err)
-			c.errorHandler(err)
-		} else {
-			c.logger.Printf(DebugLevel, "Successfully committed offset %d for topic %s partition %d",
-				msg.TopicPartition.Offset, *msg.TopicPartition.Topic, msg.TopicPartition.Partition)
+		if conf.CertificateLocation != "" {
+			_ = configMap.SetKey("ssl.certificate.location", conf.CertificateLocation)
 		}
-	}
-	start := time.Now()
-	_ = c.handler.Handle(msg, ack) // Consumer doesn't care if the handler returns an error
-	c.logger.Printf(DebugLevel, "Executed MessageHandler for message with offset %d, topic %s partition %d in %d seconds",
-		msg.TopicPartition.Offset, *msg.TopicPartition.Topic, msg.TopicPartition.Partition, time.Since(start).Seconds())
-}
-
-var nopCommit = func() {}
-
-// PartitionEOFCallback is a function type that is invoked when the end of the
-// partition is reached.
-type PartitionEOFCallback func(topic string, partition int, offset int64)
-
-// ReaderOptions is a type representing the configuration options to instantiate
-// and initialize a Reader.
-//
-// Note: There are fields that are mandatory and if not provided will result in
-// a panic.
-type ReaderOptions struct {
-	// The Kafka configuration that is used to create the underlying Confluent Kafka
-	// Consumer type. This is a required field. A zero value (nil) will cause a panic.
-	KafkaConfig *kafka.ConfigMap
-	// The handler that will be handed the message from Kafka and process it. This is
-	// a required field. A zero value (nil) will cause a panic.
-	MessageHandler MessageHandler
-	// An optional callback that is invoked when an error occurs polling/reading
-	// messages from Kafka.
-	//
-	// While optional, it is highly recommended to provide an ErrorCallback.
-	// Otherwise, errors from the underlying Confluent Kafka Consumer are discarded.
-	// Ideally, these errors should be logged and/or capture metrics.
-	ErrorCallback ErrorCallback
-	// An optional callback that is invoked when the Reader reaches the end of a
-	// topic/partition.
-	PartitionEOFCallback PartitionEOFCallback
-	// The topics and partitions to be read. This is a required field and at least
-	// one TopicPartition must be supplied. Each TopicPartition should provide the
-	// topic, partition, and starting offset. It is important to note the starting
-	// offset of 0 will default to the latest offset if 0 is not a valid offset.
-	// Optionally the values FirstOffset and LastOffset can be passed to start at
-	// the beginning or end of the partition respectively.
-	//
-	// Example:
-	//	topic := "test"
-	//	TopicPartitions: []kafka.TopicPartition{
-	//		{
-	//			Topic:     &topic,
-	//			Partition: 0,
-	//			Offset:    kefka.FirstOffset,
-	//		},
-	//	},
-	TopicPartitions kafka.TopicPartitions
-	// Configures the timeout polling messages from Kafka. This field is optional.
-	// If the zero-value is provided DefaultPollTimeout will be used.
-	PollTimeout time.Duration
-	// Allows plugging in a third party Logger. By default, the Logger from the
-	// standard library will be used if one is not provided at INFO level.
-	Logger Logger
-}
-
-// ReadTopicPartitions consumes messages from Kafka outside a consumer group. A
-// new Confluent Kafka consumer is created from the configuration provided but
-// ReadTopicPartitions automatically will add or overwrite specific values to
-// ensure it guarantees certain behaviors. The following Kafka configuration
-// cannot be overridden.
-//
-//	enable.partition.eof -> true
-//	enable.auto.commit -> false
-//	group.id -> kefkareader
-//
-// ReadTopicPartitions is blocking and will run forever unless the context is
-// either cancelled or exceeds a deadline. In most use cases you'll want to
-// call ReadTopicPartitions from a new goroutine.
-//
-// ReadTopicPartitions is capable or consuming multiple topics/partitions. But,
-// the through put will likely be higher if this function is used with one topic
-// and one partition.
-func ReadTopicPartitions(ctx context.Context, opts ReaderOptions) error {
-
-	// Overrides configurations required for this function to work as designed.
-	_ = opts.KafkaConfig.SetKey("enable.partition.eof", true)
-	_ = opts.KafkaConfig.SetKey("enable.auto.commit", false)
-	_ = opts.KafkaConfig.SetKey("group.id", "kefkareader")
-
-	// Use default poll timeout if one wasn't provided
-	if opts.PollTimeout == 0 {
-		opts.PollTimeout = DefaultPollTimeout
-	}
-	if opts.Logger == nil {
-		opts.Logger = defaultLogger()
-	}
-
-	consumer, err := kafka.NewConsumer(opts.KafkaConfig)
-	if err != nil {
-		return fmt.Errorf("unable to create Confluent Kafka Consumer with provided config: %w", err)
-	}
-
-	err = consumer.Assign(opts.TopicPartitions)
-	if err != nil {
-		return fmt.Errorf("error assigning topics/patitions: %w", err)
-	}
-	defer func(consumer *kafka.Consumer) {
-		err := consumer.Unassign()
-		if err != nil {
-			opts.Logger.Printf(WarnLevel, "Error unassigning topic/partitions: %s", err)
+		if conf.CertificateKeyLocation != "" {
+			_ = configMap.SetKey("ssl.key.location", conf.CertificateKeyLocation)
 		}
-	}(consumer)
-	defer func(consumer *kafka.Consumer) {
-		err := consumer.Close()
-		if err != nil {
-			opts.Logger.Printf(WarnLevel, "Error closing base Kafka Consumer: %s", err)
+		if conf.CertificateKeyPassword != "" {
+			_ = configMap.SetKey("ssl.key.password", conf.CertificateKeyPassword)
 		}
-	}(consumer)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			e := consumer.Poll(int(opts.PollTimeout.Milliseconds()))
-			switch e.(type) {
-			case *kafka.Message:
-				// Passes the message to the MessageHandler with a no-op Commit func.
-				// Even if the handler some reason calls commit it won't have any
-				// effect.
-				msg := e.(*kafka.Message)
-				_ = opts.MessageHandler.Handle(msg, nopCommit)
-			case kafka.Error:
-				// If an error callback was registered it will be called with the
-				// error. Otherwise, we drop the error on the floor and move on.
-				if opts.ErrorCallback != nil {
-					err := e.(kafka.Error)
-					opts.ErrorCallback(err)
-				}
-			case kafka.PartitionEOF:
-				// If the partition EOF was registered it will be called with the
-				// topic, partition, and offset notifying the callback the end of
-				// the partition has been reached.
-				if opts.PartitionEOFCallback != nil {
-					tp := e.(kafka.PartitionEOF)
-					opts.PartitionEOFCallback(*tp.Topic, int(tp.Partition), int64(tp.Offset))
-				}
-			}
+		if conf.SkipTlsVerification {
+			_ = configMap.SetKey("enable.ssl.certificate.verification", false)
 		}
 	}
+
+	// If using SASL authentication add additional SASL configuration to the
+	// configmap
+	if conf.SecurityProtocol == SaslPlaintext || conf.SecurityProtocol == SaslSsl {
+		_ = configMap.SetKey("sasl.mechanism", conf.SASLMechanism.String())
+		_ = configMap.SetKey("sasl.username", conf.SASLUsername)
+		_ = configMap.SetKey("sasl.password", conf.SASLPassword)
+	}
+
+	return configMap
 }
 
-// Reader is a type for reading messages from Kafka topics/partitions.
-//
-// Under the hood Reader uses Confluent Kafka consumer type. Reader is in
-// essence a wrapper around the Confluent Kafka Go library for reading messages
-// outside a consumer group.
-//
-// The zero value of Reader is not usable. Instances of Reader should be
-// created using the NewReader function
-//
-// In contrast to Consumer, Reader is meant to serve use cases where messages
-// are read from Kafka but not consumed. In other words, offsets are not committed
-// back to Kafka, and it is safe for multiple instances to read the same messages
-// possibly over and over. As messages are read from Kafka they are passed to a
-// provided MessageHandler to handle/process the message. A noop Commit is passed
-// to the MessageHandler, so even if its called it has no effect.
-//
-// In order to guarantee the behavior of Reader certain Kafka configuration properties
-// are overridden and cannot be altered.
-//
-//	enable.partition.eof -> true
-//	enable.auto.commit -> false
-//	group.id -> kefkareader
-type Reader struct {
-	base            kafkaConsumer
-	handler         MessageHandler
-	errorCb         ErrorCallback
-	partitionEOFCb  PartitionEOFCallback
-	pollTimeout     int
-	logger          Logger
-	topicPartitions kafka.TopicPartitions
-
-	term chan struct{}
-}
-
-// NewReader creates and initializes a new ready to use instance of Reader.
-//
-// If the API is misused (missing required fields, not setting group.id in
-// the Kafka config, etc.) this function will panic. If the Reader cannot
-// be created with the provided configuration or assigning the topics/partitions
-// fails a non-nil error value will be returned.
-func NewReader(opts ReaderOptions) (*Reader, error) {
-
-	// Sanity check on API usage, these are required fields and documented as such.
-	// If the API is being misused or not provided the documented required properties
-	// just panic.
-	if opts.KafkaConfig == nil {
-		panic("Kafka ConfigMap is required, illegal use of API")
+func consumerSlogAttrs(msg *kafka.Message, err error) []any {
+	return []any{
+		slog.String("err", err.Error()),
+		slog.String("topic", *msg.TopicPartition.Topic),
+		slog.Int("partition", int(msg.TopicPartition.Partition)),
+		slog.Int64("offset", int64(msg.TopicPartition.Offset)),
+		slog.String("key", string(msg.Key)),
 	}
-	if opts.MessageHandler == nil {
-		panic("MessageHandler is required, illegal use of API")
-	}
-	if len(opts.TopicPartitions) == 0 {
-		panic("Topics and partitions to read must be specified, illegal use of API")
-	}
-
-	// Overrides configurations required for this function to work as designed.
-	_ = opts.KafkaConfig.SetKey("enable.partition.eof", true)
-	_ = opts.KafkaConfig.SetKey("enable.auto.commit", false)
-	_ = opts.KafkaConfig.SetKey("group.id", "kefkareader")
-
-	// Always override logging config to prevent logs from being sent to stderr/stdout
-	_ = opts.KafkaConfig.SetKey("go.logs.channel.enable", true)
-
-	// Use default poll timeout if one wasn't provided
-	if opts.PollTimeout == 0 {
-		opts.PollTimeout = DefaultPollTimeout
-	}
-	if opts.Logger == nil {
-		opts.Logger = defaultLogger()
-	}
-
-	consumer, err := kafka.NewConsumer(opts.KafkaConfig)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create Confluent Kafka Consumer with provided config: %w", err)
-	}
-
-	err = consumer.Assign(opts.TopicPartitions)
-	if err != nil {
-		return nil, fmt.Errorf("error assigning topics/patitions: %w", err)
-	}
-
-	return &Reader{
-		base:            consumer,
-		handler:         opts.MessageHandler,
-		errorCb:         opts.ErrorCallback,
-		partitionEOFCb:  opts.PartitionEOFCallback,
-		pollTimeout:     int(opts.PollTimeout.Milliseconds()),
-		logger:          opts.Logger,
-		term:            make(chan struct{}),
-		topicPartitions: opts.TopicPartitions,
-	}, nil
-}
-
-// QueryWatermarkOffsets queries Kafka to get the starting and ending offsets for
-// all the topics/partitions specified in the TopicPartitions field in ReaderOptions
-// and returning them as a map where the key is topic|partition -> OffsetWatermarks.
-//
-// Because each topic and partition is queried individually the caller must check
-// the Error field of the OffsetWatermarks type to ensure the operation succeeded.
-func (r *Reader) QueryWatermarkOffsets() map[string]OffsetWatermarks {
-	watermarks := make(map[string]OffsetWatermarks)
-	for _, tp := range r.topicPartitions {
-		low, high, err := r.base.QueryWatermarkOffsets(*tp.Topic, tp.Partition, 5000)
-		partition := strconv.Itoa(int(tp.Partition))
-		watermarks[*tp.Topic+"|"+partition] = OffsetWatermarks{
-			Low:   low,
-			High:  high,
-			Error: err,
-		}
-	}
-	return watermarks
-}
-
-// Read begins polling Kafka for messages/events and passing the messages to the
-// configured MessageHandler.
-//
-// This method is blocking and will run until Close is called. In most cases this
-// method should be called on a new goroutine.
-//
-// This method should never be called more than once.
-func (r *Reader) Read() {
-
-	go func() {
-		for log := range r.base.Logs() {
-			r.logger.Printf(InfoLevel, "[%s]-[%s] %s", log.Name, log.Tag, log.Message)
-		}
-	}()
-
-	for {
-		select {
-		case <-r.term:
-			return
-		default:
-			e := r.base.Poll(r.pollTimeout)
-			switch e.(type) {
-			case *kafka.Message:
-				// Passes the message to the MessageHandler with a no-op Commit func.
-				// Even if the handler some reason calls commit it won't have any
-				// effect.
-				msg := e.(*kafka.Message)
-				_ = r.handler.Handle(msg, nopCommit)
-			case kafka.Error:
-				// If an error callback was registered it will be called with the
-				// error. Otherwise, we drop the error on the floor and move on.
-				if r.errorCb != nil {
-					err := e.(kafka.Error)
-					r.errorCb(err)
-				}
-			case kafka.PartitionEOF:
-				// If the partition EOF was registered it will be called with the
-				// topic, partition, and offset notifying the callback the end of
-				// the partition has been reached.
-				if r.partitionEOFCb != nil {
-					tp := e.(kafka.PartitionEOF)
-					r.partitionEOFCb(*tp.Topic, int(tp.Partition), int64(tp.Offset))
-				}
-			default:
-				// other events are ignored
-				r.logger.Printf(DebugLevel, "Event %s ignored", e)
-			}
-		}
-	}
-}
-
-// Close stops the Consumer. After calling Close the Consumer is no longer usable.
-func (r *Reader) Close() error {
-	r.term <- struct{}{}
-	return r.base.Close()
-}
-
-// Consume uses the provided Consumer and reads messages from Kafka in a separate
-// goroutine. A CancelFunc is returned to cancel/stop consumption of messages from
-// Kafka.
-//
-// The consumer and handler parameters are mandatory, while the ErrorCallback is
-// optionally. Providing an ErrorCallback is highly recommended, otherwise error
-// will end up in the void.
-//
-// Calling Close on kafka.Consumer will cause all hell to break loose. Ensure
-// the CancelFunc is called first, and then the kafka.Consumer can be safely
-// closed.
-func Consume(consumer *kafka.Consumer, handler MessageHandler, errCb ErrorCallback) CancelFunc {
-	termChan := make(chan struct{}, 1)
-	termed := false
-	cancel := CancelFunc(func() {
-		if !termed {
-			termChan <- struct{}{}
-			termed = true
-		}
-	})
-
-	go func() {
-		for {
-			select {
-			case <-termChan:
-				return
-			default:
-				msg, err := consumer.ReadMessage(DefaultPollTimeout)
-				if err != nil {
-					if errCb != nil {
-						errCb(err)
-					}
-					continue
-				}
-				ack := func() {
-					if _, err := consumer.Commit(); err != nil && errCb != nil {
-						errCb(err)
-					}
-				}
-				_ = handler.Handle(msg, ack)
-			}
-		}
-	}()
-
-	return cancel
-}
-
-type MetadataClient interface {
-	Assignment() (partitions []kafka.TopicPartition, err error)
-	Committed(partitions []kafka.TopicPartition, timeoutMs int) (offsets []kafka.TopicPartition, err error)
-	QueryWatermarkOffsets(topic string, partition int32, timeoutMs int) (low int64, high int64, err error)
-}
-
-// LagForTopicPartition fetches the current lag for a given consumer, topic
-// and partition.
-//
-// Lag is meant to be used when working in a consumer group. To fetch how
-// many messages are in a given topic/partition use MessageCount instead.
-func LagForTopicPartition(client MetadataClient, topic string, partition int) (int64, error) {
-	partitions, err := client.Assignment()
-	if err != nil {
-		return 0, fmt.Errorf("error querying assignments: %w", err)
-	}
-
-	partitions, err = client.Committed(partitions, 10000)
-	if err != nil {
-		return 0, fmt.Errorf("error querying committed offsets: %w", err)
-	}
-
-	low, high, err := client.QueryWatermarkOffsets(topic, int32(partition), 10000)
-	if err != nil {
-		return 0, fmt.Errorf("error querying watermark offsets: %w", err)
-	}
-
-	p, ok := slices.FindFirst(partitions, func(p kafka.TopicPartition) bool {
-		if *p.Topic == topic && p.Partition == int32(partition) {
-			return true
-		}
-		return false
-	})
-	if !ok {
-		return high - low, nil
-	}
-	return high - int64(p.Offset), nil
-}
-
-// MessageCount returns the count of messages for a given topic/partition.
-func MessageCount(client MetadataClient, topic string, partition int) (int64, error) {
-	low, high, err := client.QueryWatermarkOffsets(topic, int32(partition), 10000)
-	if err != nil {
-		return 0, fmt.Errorf("error querying watermark offsets: %w", err)
-	}
-	return high - low, nil
-}
-
-type OffsetWatermarks struct {
-	Low   int64
-	High  int64
-	Error error
 }

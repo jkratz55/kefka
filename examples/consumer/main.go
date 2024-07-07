@@ -1,73 +1,47 @@
 package main
 
 import (
-	"context"
-	"fmt"
+	"log/slog"
 	"os"
-	"os/signal"
-	"strings"
-	"syscall"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 
-	"github.com/jkratz55/kefka"
+	"github.com/jkratz55/kefka/v2"
 )
-
-type sampleMessageHandler struct {
-	counter int
-}
-
-func (s *sampleMessageHandler) Handle(msg *kafka.Message, ack kefka.Commit) error {
-	s.counter++
-	fmt.Println(msg.TopicPartition.Offset)
-
-	// If we configured Kafka to disable automatic commits in favor of manual
-	// commits, we'd need to call ack. Depending on your requirements and use
-	// cases you may need to call ack on every successful processing of a message.
-	// However, that is not performant and will lower throughput. Or you may decide
-	// to commit on a time interval, or every X messages, or a combo of both.
-	// IMPORTANT: DON'T CALL ack if you are using automatic commits, let the client
-	// handle it for you automatically.
-	return nil
-}
 
 func main() {
 
-	brokers := os.Getenv("KAFKA_BROKERS")
-	if strings.TrimSpace(brokers) == "" {
-		panic("KAFKA_BROKERS environment variable not set or blank")
-	}
+	leveler := new(slog.LevelVar)
+	leveler.Set(slog.LevelDebug)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		AddSource: true,
+		Level:     leveler,
+	}))
 
-	config := &kafka.ConfigMap{
-		"bootstrap.servers": "localhost:9092",
-		"group.id":          "kefka-test",
-		"auto.offset.reset": "smallest",
-	}
-
-	handler := new(sampleMessageHandler)
-	opts := kefka.ConsumerOptions{
-		KafkaConfig: config,
-		Handler:     handler,
-		Topic:       "test",
-		ErrorHandler: func(err error) {
-			fmt.Println("Aahhhhh snap something went wrong!", err)
-		},
-	}
-
-	consumer, err := kefka.NewConsumer(opts)
+	conf, err := kefka.LoadConfigFromEnv()
 	if err != nil {
-		panic(err)
+		logger.Error("Failed to load config from environment",
+			slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	conf.Logger = logger
+
+	handler := kefka.HandlerFunc(func(msg *kafka.Message) error {
+		// logger.Debug("Received message",
+		// 	slog.Any("message", msg))
+		return nil
+	})
+
+	consumer, err := kefka.NewConsumer(conf, handler, "test")
+	if err != nil {
+		logger.Error("Failed to initialize Kafka Consumer",
+			slog.String("err", err.Error()))
+		os.Exit(1)
 	}
 
-	go consumer.Consume()
-
-	appCtx := context.Background()
-	appCtx, stop := signal.NotifyContext(appCtx, syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-
-	select {
-	case <-appCtx.Done():
-		fmt.Println("Consumed", handler.counter, "messages")
-		return
+	if err := consumer.Run(); err != nil {
+		logger.Error("Failed to run consumer",
+			slog.String("err", err.Error()))
+		os.Exit(1)
 	}
 }

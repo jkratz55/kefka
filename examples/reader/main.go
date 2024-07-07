@@ -1,84 +1,101 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"time"
+	"log/slog"
+	"os"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 
-	"github.com/jkratz55/kefka"
+	"github.com/jkratz55/kefka/v2"
 )
 
 func main() {
-	config := &kafka.ConfigMap{
-		"bootstrap.servers": "localhost:9092",
-	}
 
-	topic := "test"
-	opts := kefka.ReaderOptions{
-		KafkaConfig: config,
-		MessageHandler: kefka.MessageHandlerFunc(func(msg *kafka.Message, ack kefka.Commit) error {
-			// Here we are just printing the offset of the message but this is
-			// where the logic would go to handle the message... save to database,
-			// trigger some action, etc.
-			// Note: here we are using MessageHandlerFunc for convince but it most
-			// cases you'll likely want to implement your own type and include retries
-			// and more robust error handling
-			fmt.Println(msg.TopicPartition.Offset)
-			return nil
-		}),
-		ErrorCallback: func(err error) {
-			// This callback gives the caller the oppertunity to log errors or
-			// increment metrics/counters. For demo purposes we are just printing
-			// errors out to stdout.
-			fmt.Println("ERROR:", err)
-		},
-		PartitionEOFCallback: func(topic string, partition int, offset int64) {
-			// Gets called to inform the caller the end of the topic has been reached
-			fmt.Printf("Reached EOF for Topic %s, Partition %d, Offset %d\n", topic, partition, offset)
-		},
-		// Defines the topics/partitions you want to read, and where you want to start.
-		// NOTE: If the offset is invalid the default behavior will be to start at the
-		// last offset
-		TopicPartitions: []kafka.TopicPartition{
-			{
-				Topic:     &topic,
-				Partition: 0,
-				Offset:    kefka.FirstOffset,
-			},
-		},
-	}
+	leveler := new(slog.LevelVar)
+	leveler.Set(slog.LevelDebug)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		AddSource: true,
+		Level:     leveler,
+	}))
 
-	reader, err := kefka.NewReader(opts)
+	conf, err := kefka.LoadConfigFromEnv()
 	if err != nil {
-		panic(err)
+		logger.Error("Failed to load config from environment",
+			slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	conf.Logger = logger
+
+	handler := kefka.HandlerFunc(func(msg *kafka.Message) error {
+		// logger.Debug("Received message",
+		// 	slog.Any("message", msg))
+		return nil
+	})
+
+	var reader *kefka.Reader
+	readerOpts := kefka.ReaderOpts{
+		OnEndOfPartition: func(topic string, partition int, offset int64) {
+			logger.Info("End of partition reached",
+				slog.String("topic", topic),
+				slog.Int("partition", partition),
+				slog.Int64("offset", offset))
+			pos, err := reader.Position()
+			if err != nil {
+				logger.Error("Failed to get positions",
+					slog.String("err", err.Error()))
+			}
+			logger.Info("Current Positions",
+				slog.Any("positions", pos))
+
+			lag, err := reader.Lag()
+			if err != nil {
+				logger.Error("Failed to get lag",
+					slog.String("err", err.Error()))
+			}
+			logger.Info("Current Lag",
+				slog.Any("lag", lag))
+		},
+		StopOnEndOfPartition: true,
+		Limit:                0,
+	}
+	topicPartitions := []kafka.TopicPartition{
+		{
+			Topic:     kefka.StringPtr("test"),
+			Partition: 0,
+		},
+		{
+			Topic:     kefka.StringPtr("test"),
+			Partition: 1,
+		},
+	}
+	reader, err = kefka.NewReader(conf, handler, topicPartitions, readerOpts)
+	if err != nil {
+		logger.Error("Failed to initialize Kafka Reader",
+			slog.String("err", err.Error()))
+		os.Exit(1)
 	}
 
-	offsets := reader.QueryWatermarkOffsets()
-	fmt.Println(offsets)
+	position, err := reader.Position()
+	if err != nil {
+		logger.Error("Failed to get positions",
+			slog.String("err", err.Error()))
+		os.Exit(1)
+	}
 
-	// You will almost always want to call read in a separate goroutine unless
-	// you truely want to block forever.
-	go reader.Read()
+	logger.Info("Positions",
+		slog.Any("positions", position))
 
-	// Lazy example to let the reader run in the background and then close it...
-	// Don't do this as home
-	time.Sleep(10 * time.Second)
-	reader.Close()
-	time.Sleep(10 * time.Second)
+	lag, err := reader.Lag()
+	if err != nil {
+		logger.Error("Failed to get lag",
+			slog.String("err", err.Error()))
+	}
+	logger.Info("Current Lag",
+		slog.Any("lag", lag))
 
-	// Demonstrates the use of the ReadTopicPartitions helper function which can be
-	// used instead of the Reader type.
-	fmt.Println("Use ReadTopicPartitions function")
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		err := kefka.ReadTopicPartitions(ctx, opts)
-		if err != nil {
-			panic(err)
-		}
-	}()
-
-	time.Sleep(10 * time.Second)
-	cancel()
+	if err := reader.Run(); err != nil {
+		logger.Error("Failed to run reader",
+			slog.String("err", err.Error()))
+		os.Exit(1)
+	}
 }

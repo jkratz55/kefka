@@ -1,324 +1,322 @@
 package kefka
 
 import (
+	"context"
 	"testing"
 	"time"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-)
 
-type consumerMock struct {
-	mock.Mock
-}
-
-func (c *consumerMock) Assignment() (partitions []kafka.TopicPartition, err error) {
-	args := c.Called()
-	partitions = args.Get(0).([]kafka.TopicPartition)
-	if args.Get(1) != nil {
-		err = args.Get(1).(error)
-	}
-	return
-}
-
-func (c *consumerMock) Committed(partitions []kafka.TopicPartition, timeoutMs int) (offsets []kafka.TopicPartition, err error) {
-	args := c.Called(partitions, timeoutMs)
-	offsets = args.Get(0).([]kafka.TopicPartition)
-	if args.Get(1) != nil {
-		err = args.Get(1).(error)
-	}
-	return
-}
-
-func (c *consumerMock) QueryWatermarkOffsets(topic string, partition int32, timeoutMs int) (low int64, high int64, err error) {
-	args := c.Called(topic, partition, timeoutMs)
-	low = args.Get(0).(int64)
-	high = args.Get(1).(int64)
-	if args.Get(2) != nil {
-		err = args.Get(2).(error)
-	}
-	return
-}
-
-func (c *consumerMock) Close() error {
-	args := c.Called()
-	if args.Get(0) != nil {
-		return args.Get(0).(error)
-	}
-	return nil
-}
-
-func (c *consumerMock) Commit() ([]kafka.TopicPartition, error) {
-	args := c.Called()
-	var err error
-	topicPartitions := args.Get(0).([]kafka.TopicPartition)
-	if args.Get(1) != nil {
-		err = args.Get(1).(error)
-	}
-	return topicPartitions, err
-}
-
-func (c *consumerMock) Poll(timeoutMs int) (event kafka.Event) {
-	args := c.Called(timeoutMs)
-	return args.Get(0).(kafka.Event)
-}
-
-func (c *consumerMock) ReadMessage(timeout time.Duration) (*kafka.Message, error) {
-	args := c.Called(timeout)
-	var err error
-	if args.Get(1) != nil {
-		err = args.Get(1).(error)
-	}
-	return args.Get(0).(*kafka.Message), err
-}
-
-func (c *consumerMock) Subscribe(topic string, rebalanceCb kafka.RebalanceCb) error {
-	args := c.Called(topic, rebalanceCb)
-	if args.Get(0) != nil {
-		return args.Get(0).(error)
-	}
-	return nil
-}
-
-type mockHandler struct {
-	mock.Mock
-	counter int
-}
-
-func (m *mockHandler) Handle(msg *kafka.Message, ack Commit) error {
-	m.counter++
-	args := m.Called(msg, ack)
-	if args.Get(0) != nil {
-		return args.Get(0).(error)
-	}
-	return nil
-}
-
-var (
-	testConsumerKafkaConfig = &kafka.ConfigMap{
-		"bootstrap.servers": "localhost:9092",
-		"group.id":          "kefka-test",
-		"auto.offset.reset": "smallest",
-	}
+	"github.com/jkratz55/kefka/v2/internal"
 )
 
 func TestNewConsumer(t *testing.T) {
-	hander := new(mockHandler)
-	opts := ConsumerOptions{
-		KafkaConfig: &kafka.ConfigMap{
-			"bootstrap.servers": "localhost:9092",
-			"group.id":          "kefka-test",
-			"auto.offset.reset": "smallest",
+	tests := []struct {
+		name      string
+		conf      Config
+		handler   Handler
+		topic     string
+		expectErr bool
+	}{
+		{
+			name: "Valid Configuration",
+			conf: Config{
+				BootstrapServers: []string{"localhost:9092"},
+				GroupID:          "kefka-test",
+				AutoOffsetReset:  Earliest,
+			},
+			handler: HandlerFunc(func(msg *kafka.Message) error {
+				return nil
+			}),
+			topic:     "test",
+			expectErr: false,
 		},
-		Handler: hander,
-		Topic:   "test",
-		Logger:  nopLogger{},
+		{
+			name: "Invalid Configuration - Missing Handler",
+			conf: Config{
+				BootstrapServers: []string{"localhost:9092"},
+				GroupID:          "kefka-test",
+				AutoOffsetReset:  Earliest,
+			},
+			handler:   nil,
+			topic:     "test",
+			expectErr: true,
+		},
+		{
+			name: "Invalid Configuration - Missing Topic",
+			conf: Config{
+				BootstrapServers: []string{"localhost:9092"},
+				GroupID:          "kefka-test",
+				AutoOffsetReset:  Earliest,
+			},
+			handler: HandlerFunc(func(msg *kafka.Message) error {
+				return nil
+			}),
+			topic:     "",
+			expectErr: true,
+		},
 	}
 
-	var consumer *Consumer
-	var err error
-	assert.NotPanics(t, func() {
-		consumer, err = NewConsumer(opts)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumer, err := NewConsumer(test.conf, test.handler, test.topic)
+			assert.Equal(t, test.expectErr, err != nil)
+			if !test.expectErr {
+				assert.NotNil(t, consumer)
+			}
+		})
+	}
+}
+
+func TestConsumer_Run(t *testing.T) {
+
+	base := new(mockBaseConsumer)
+	base.On("Poll", mock.Anything).Return()
+}
+
+type mockIntegrationHandler struct {
+	keys []string
+}
+
+func (m *mockIntegrationHandler) Handle(msg *kafka.Message) error {
+	m.keys = append(m.keys, string(msg.Key))
+	return nil
+}
+
+func TestConsumer_Integration(t *testing.T) {
+	if !internal.IsTestContainersEnabled() {
+		t.Skip("testcontainers not enabled")
+	}
+
+	ctx := context.Background()
+	kafkaContainer, err := initKafkaTestContainer(ctx)
+	assert.NoError(t, err)
+
+	brokers, err := kafkaContainer.Brokers(ctx)
+	assert.NoError(t, err)
+
+	producer, err := NewProducer(Config{
+		BootstrapServers: brokers,
+		RequiredAcks:     AckLeader,
+		Logger:           NopLogger(),
+	})
+	assert.NoError(t, err)
+
+	keys := make([]string, 1000)
+
+	// Produce messages for the consumer to consume
+	for i := 0; i < 1000; i++ {
+		key := uuid.New().String()
+		keys[i] = key
+
+		err := producer.M().
+			Topic("test").
+			Key(key).
+			Value([]byte(key)).
+			SendAndWait()
 		assert.NoError(t, err)
-		assert.NotNil(t, consumer)
-	})
-
-	opts.KafkaConfig = nil
-	assert.Panics(t, func() {
-		consumer, err = NewConsumer(opts)
-	})
-
-	opts.KafkaConfig = &kafka.ConfigMap{
-		"bootstrap.servers": "localhost:9092",
-		"group.id":          "kefka-test",
-		"auto.offset.reset": "smallest",
 	}
-	opts.Handler = nil
-	assert.Panics(t, func() {
-		consumer, err = NewConsumer(opts)
-	})
 
-	opts.Handler = hander
-	opts.Topic = ""
-	assert.Panics(t, func() {
-		consumer, err = NewConsumer(opts)
-	})
-}
+	handler := &mockIntegrationHandler{}
 
-func TestConsumer_Assignments(t *testing.T) {
-	topic := "test"
-	hander := new(mockHandler)
-	opts := ConsumerOptions{
-		KafkaConfig: testConsumerKafkaConfig,
-		Handler:     hander,
-		Topic:       topic,
-		Logger:      nopLogger{},
-	}
-	consumer, err := NewConsumer(opts)
+	consumer, err := NewConsumer(Config{
+		BootstrapServers: brokers,
+		GroupID:          "kefka-test",
+		AutoOffsetReset:  Earliest,
+		SecurityProtocol: Plaintext,
+		Logger:           NopLogger(),
+	}, handler, "test")
 	assert.NoError(t, err)
 
-	expected := []kafka.TopicPartition{
+	// Run the consumer as one normally would
+	go func() {
+		err := consumer.Run()
+		assert.NoError(t, err)
+	}()
+
+	// Once the consumer has read all 1000 messages we published close it so it
+	// stops consuming messages.
+	ticker := time.NewTicker(time.Second * 1)
+
+Loop:
+	for {
+		select {
+		case <-ticker.C:
+			if len(handler.keys) == 1000 {
+				consumer.Close()
+				break Loop
+			}
+		}
+	}
+
+	assert.ElementsMatch(t, keys, handler.keys)
+}
+
+func TestConsumer_handleError(t *testing.T) {
+	type test struct {
+		name      string
+		arg       kafka.Error
+		expectErr bool
+	}
+
+	tests := []test{
 		{
-			Topic:     &topic,
-			Partition: 0,
-			Offset:    1000,
+			name:      "Non Fatal Error",
+			arg:       kafka.NewError(kafka.ErrAllBrokersDown, "all brokers down", false),
+			expectErr: false,
 		},
 		{
-			Topic:     &topic,
-			Partition: 1,
-			Offset:    343,
+			name:      "Fatal Error",
+			arg:       kafka.NewError(kafka.ErrCritSysResource, "all hope is lost", true),
+			expectErr: true,
 		},
 	}
-	baseConsumer := new(consumerMock)
-	baseConsumer.On("Assignment").Return(expected, nil)
-	consumer.baseConsumer = baseConsumer
 
-	topicPartitions, err := consumer.Assignments()
-	assert.NoError(t, err)
-	assert.Equal(t, expected, topicPartitions)
-}
-
-func TestConsumer_Close(t *testing.T) {
-	topic := "test"
-	hander := new(mockHandler)
-	opts := ConsumerOptions{
-		KafkaConfig: testConsumerKafkaConfig,
-		Handler:     hander,
-		Topic:       topic,
-		Logger:      nopLogger{},
+	cbCalled := 0
+	cb := func(err error) {
+		cbCalled++
 	}
-	consumer, err := NewConsumer(opts)
-	assert.NoError(t, err)
 
-	baseConsumer := new(consumerMock)
-	baseConsumer.On("Close").Return(nil)
-	consumer.baseConsumer = baseConsumer
-
-	err = consumer.Close()
-	assert.NoError(t, err)
-}
-
-func TestConsumer_Consume(t *testing.T) {
-	topic := "test"
-	msg := &kafka.Message{
-		TopicPartition: kafka.TopicPartition{
-			Topic:     &topic,
-			Partition: 0,
-			Offset:    100,
+	consumer := &Consumer{
+		logger: NopLogger(),
+		conf: Config{
+			OnError: cb,
 		},
-		Value:     []byte("world"),
-		Key:       []byte("hello"),
-		Timestamp: time.Now(),
 	}
-	hander := new(mockHandler)
-	hander.On("Handle", mock.Anything, mock.Anything).
-		Return(nil)
-
-	opts := ConsumerOptions{
-		KafkaConfig: testConsumerKafkaConfig,
-		Handler:     hander,
-		Topic:       topic,
-		Logger:      nopLogger{},
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := consumer.handleError(test.arg)
+			assert.Equal(t, test.expectErr, err != nil)
+		})
 	}
-	consumer, err := NewConsumer(opts)
-	assert.NoError(t, err)
 
-	baseConsumer := new(consumerMock)
-	baseConsumer.On("ReadMessage", mock.Anything).
-		Return(msg, nil)
-	consumer.baseConsumer = baseConsumer
+	assert.Equal(t, 2, cbCalled)
+}
 
-	go consumer.Consume()
-	time.Sleep(time.Millisecond * 100)
-	assert.Greater(t, hander.counter, 0)
+func TestConsumer_handleOffsetsCommitted(t *testing.T) {
+	type test struct {
+		name string
+		args kafka.OffsetsCommitted
+	}
+
+	tests := []test{
+		{
+			name: "Offset Commit Error",
+			args: kafka.OffsetsCommitted{
+				Error: kafka.NewError(kafka.ErrAllBrokersDown, "all brokers down", false),
+				Offsets: []kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    0,
+						Error:     kafka.NewError(kafka.ErrAllBrokersDown, "all brokers down", false),
+					},
+				},
+			},
+		},
+		{
+			name: "Offset Commit Success",
+			args: kafka.OffsetsCommitted{
+				Error: nil,
+				Offsets: []kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    kafka.Offset(1001),
+						Error:     nil,
+					},
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumer := &Consumer{
+				logger: NopLogger(),
+			}
+			consumer.handleOffsetsCommitted(test.args)
+		})
+	}
 }
 
 func TestConsumer_Lag(t *testing.T) {
-	topic := "test"
-	hander := new(mockHandler)
-	hander.On("Handle", mock.Anything, mock.Anything).
-		Return(nil)
-
-	opts := ConsumerOptions{
-		KafkaConfig: testConsumerKafkaConfig,
-		Handler:     hander,
-		Topic:       topic,
-		Logger:      nopLogger{},
+	type test struct {
+		name         string
+		consumerInit func() baseConsumer
+		expected     map[string]int64
 	}
-	consumer, err := NewConsumer(opts)
-	assert.NoError(t, err)
 
-	assignments := []kafka.TopicPartition{
+	tests := []test{
 		{
-			Topic:     &topic,
-			Partition: 0,
-			Offset:    1000,
+			name: "With Assigned Partitions",
+			consumerInit: func() baseConsumer {
+				consumer := new(mockBaseConsumer)
+
+				assignmentReturn := []kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    0,
+					},
+					{
+						Topic:     StringPtr("test"),
+						Partition: 1,
+						Offset:    0,
+					},
+				}
+				consumer.On("Assignment").Return(assignmentReturn, nil)
+
+				committedReturn := []kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    1001,
+					},
+					{
+						Topic:     StringPtr("test"),
+						Partition: 1,
+						Offset:    2312,
+					},
+				}
+				consumer.On("Committed", mock.Anything, mock.Anything).Return(committedReturn, nil)
+
+				consumer.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).Return(int64(141), int64(3000), nil).Once()
+				consumer.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).Return(int64(163), int64(3000), nil).Once()
+
+				return consumer
+			},
+			expected: map[string]int64{
+				"test|0": 1999,
+				"test|1": 688,
+			},
 		},
 		{
-			Topic:     &topic,
-			Partition: 1,
-			Offset:    343,
+			name: "Without Assigned Partitions",
+			consumerInit: func() baseConsumer {
+				consumer := new(mockBaseConsumer)
+
+				assignmentReturn := []kafka.TopicPartition{}
+				consumer.On("Assignment").Return(assignmentReturn, nil)
+
+				return consumer
+			},
+			expected: map[string]int64{},
 		},
 	}
-	low := int64(0)
-	high := int64(10000)
-	mockConsumer := new(consumerMock)
-	mockConsumer.On("Assignment").Return(assignments, nil)
-	mockConsumer.On("Committed", mock.Anything, mock.Anything).
-		Return(assignments, nil)
-	mockConsumer.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).
-		Return(low, high, err)
-	consumer.baseConsumer = mockConsumer
 
-	lag, err := consumer.Lag()
-	assert.NoError(t, err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumer := &Consumer{
+				base: test.consumerInit(),
+			}
 
-	expected := map[string]int64{
-		"test|0": 9000,
-		"test|1": 9657,
+			lag, err := consumer.Lag()
+			assert.NoError(t, err)
+			assert.Equal(t, test.expected, lag)
+		})
 	}
-	assert.Equal(t, expected, lag)
-}
-
-func TestConsumer_LagForTopicPartition(t *testing.T) {
-	topic := "test"
-	hander := new(mockHandler)
-	hander.On("Handle", mock.Anything, mock.Anything).
-		Return(nil)
-
-	opts := ConsumerOptions{
-		KafkaConfig: testConsumerKafkaConfig,
-		Handler:     hander,
-		Topic:       topic,
-		Logger:      nopLogger{},
-	}
-	consumer, err := NewConsumer(opts)
-	assert.NoError(t, err)
-
-	assignments := []kafka.TopicPartition{
-		{
-			Topic:     &topic,
-			Partition: 0,
-			Offset:    1000,
-		},
-		{
-			Topic:     &topic,
-			Partition: 1,
-			Offset:    343,
-		},
-	}
-	low := int64(0)
-	high := int64(10000)
-	mockConsumer := new(consumerMock)
-	mockConsumer.On("Assignment").Return(assignments, nil)
-	mockConsumer.On("Committed", mock.Anything, mock.Anything).
-		Return(assignments, nil)
-	mockConsumer.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).
-		Return(low, high, err)
-	consumer.baseConsumer = mockConsumer
-
-	lag, err := consumer.LagForTopicPartition("test", 0)
-	assert.NoError(t, err)
-	assert.Equal(t, int64(9000), lag)
 }

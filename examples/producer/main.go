@@ -1,151 +1,111 @@
 package main
 
 import (
-	"context"
 	"fmt"
+	"log/slog"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
-	"github.com/jkratz55/kefka"
+	"github.com/jkratz55/kefka/v2"
 )
-
-type order struct {
-	ID        string
-	FirstName string
-	LastName  string
-	Total     float64
-}
 
 func main() {
 
-	brokers := os.Getenv("KAFKA_BROKERS")
-	if strings.TrimSpace(brokers) == "" {
-		panic("KAFKA_BROKERS environment variable not set or blank")
+	leveler := new(slog.LevelVar)
+	leveler.Set(slog.LevelDebug)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		AddSource: true,
+		Level:     leveler,
+	}))
+
+	conf := kefka.Config{
+		BootstrapServers: []string{"localhost:9092"},
+		SecurityProtocol: kefka.Plaintext,
+		RequiredAcks:     kefka.AckAll,
+		Idempotence:      false,
+		Logger:           logger,
+		OnError: func(err error) {
+			logger.Error(err.Error())
+		},
 	}
 
-	// Setup configuration for Kafka
-	kafkaConfig := &kafka.ConfigMap{
-		"bootstrap.servers": brokers,
-		"client.id":         uuid.New().String(),
-		"acks":              "all",
-		"retries":           5,
-	}
-
-	// Zap is used here to provide an example of how to use a third party logger
-	logger, err := zap.NewDevelopment(zap.IncreaseLevel(zap.DebugLevel))
+	producer, err := kefka.NewProducer(conf)
 	if err != nil {
-		panic(err)
+		logger.Error("Failed to initialize Kafka Producer",
+			slog.String("err", err.Error()))
+		os.Exit(1)
 	}
 
-	// Create new producer with the required configuration
-	producer, err := kefka.NewProducer(kefka.ProducerOptions{
-		KafkaConfig:     kafkaConfig,
-		KeyMarshaller:   kefka.StringMarshaller(),
-		ValueMarshaller: kefka.JsonMarshaller(),
-		Logger: kefka.LoggerFunc(func(level kefka.LogLevel, s string, a ...any) {
-			zapLevel := mapKefkaLogLevelToZap(level)
-			logger.Log(zapLevel, fmt.Sprintf(s, a...))
-		}),
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	// Since we want the delivery reports we create a channel to receive the
-	// reports. In the example below a single channel is being used to get
-	// the report for all messages produced. In the real world you likely would
-	// not do this, and instead use a goroutine and channel per write or set of
-	// writes as it relates to whatever is an "operation" or "transaction" in your
-	// system.
-	deliveryChan := make(chan kafka.Event, 1000)
-	go func() {
-		for e := range deliveryChan {
-			switch ev := e.(type) {
-			case *kafka.Message:
-				// This is the message delivery report indicating if the message
-				// was successfully delivery or encountered a permanent failure
-				// after librdkafka exhausted all retries. Application level retries
-				// are not recommended here since the client is already configured
-				// to retry.
-				if ev.TopicPartition.Error == nil {
-					logger.Info(fmt.Sprintf("Successfully delivered message to Topic %s, Partition %d Offset %d",
-						*ev.TopicPartition.Topic, ev.TopicPartition.Partition, ev.TopicPartition.Offset))
-				} else {
-					logger.Error("Failed to deliver message",
-						zap.Error(err))
-				}
-			}
-		}
-	}()
-
-	// Produces 1000 messages to Kafka, delivery reports will be fed into the
-	// provided delivery channel
-	logger.Info("Testing produce asynchronously")
 	for i := 0; i < 1000; i++ {
-		id := uuid.New()
-		data := order{
-			ID:        id.String(),
-			FirstName: "Billy",
-			LastName:  "Bob",
-			Total:     9.99,
-		}
-		if err := producer.Produce("test", id, data, deliveryChan); err != nil {
-			logger.Error("failed to produce message",
-				zap.Error(err))
+		key := uuid.New().String()
+		err := producer.M().
+			Topic("test").
+			Key(key).
+			JSON(map[string]interface{}{
+				"event": "CREATE_USER",
+			}).
+			SendAndWait()
+		if err != nil {
+			logger.Error("Failed to send message",
+				slog.String("err", err.Error()))
 		}
 	}
 
-	// Confluent Kafka Producer doesn't technically support synchronously producing
-	// messages, but Kefka emulates it. There is a caveat, this operation takes a
-	// context so that it may be canceled or timeout so we don't block indefinitely.
-	// However, the message may or may not be delivered if the context is done before
-	// receiving the delivery report.
-	logger.Info("Testing produce synchronously")
-	for i := 0; i < 10; i++ {
-		id := uuid.New()
-		data := order{
-			ID:        id.String(),
-			FirstName: "Billy",
-			LastName:  "Bob",
-			Total:     9.99,
+	for i := 0; i < 100000; i++ {
+		key := uuid.New().String()
+		msg, _ := producer.M().
+			Topic("test").
+			Key(key).
+			JSON(map[string]interface{}{
+				"event": "CREATE_USER",
+			}).Message()
+		if err := produceMessage(producer, msg); err != nil {
+			logger.Error("Failed to send message",
+				slog.String("err", err.Error()))
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
-		if err := producer.SyncProduce(ctx, "errTest", id, data); err != nil {
-			logger.Error("failed to produce message",
-				zap.Error(err))
-		}
-		cancel()
 	}
 
-	for remaining := producer.Flush(10000); remaining > 0; {
-		// keep flushing until the toilet is unclogged
+	for i := 0; i < 10000000; i++ {
+		key := uuid.New().String()
+		err := producer.M().
+			Topic("test").
+			Key(key).
+			JSON(map[string]interface{}{
+				"event": "CREATE_USER",
+			}).
+			Send(nil)
+		if err != nil {
+			logger.Error("Failed to send message",
+				slog.String("err", err.Error()))
+		}
+	}
+
+	for x := producer.Flush(10 * time.Second); x > 0; x = producer.Flush(10 * time.Second) {
+		logger.Debug("Waiting for messages to be sent",
+			slog.Int("count", x))
 	}
 	producer.Close()
+	time.Sleep(5 * time.Second)
 }
 
-// mapKefkaLogLevelToZap is an example of using zap with Kefka that maps the
-// log level from Kefka to Zap
-func mapKefkaLogLevelToZap(level kefka.LogLevel) zapcore.Level {
-	switch level {
-	case kefka.DebugLevel:
-		return zap.DebugLevel
-	case kefka.InfoLevel:
-		return zap.InfoLevel
-	case kefka.WarnLevel:
-		return zap.WarnLevel
-	case kefka.ErrorLevel:
-		return zap.ErrorLevel
-	case kefka.FatalLevel:
-		return zap.FatalLevel
-	default:
-		// this should never happen because we've exhausted all the levels returned
-		// be Kefka, so we'll just return Zap panic level
-		return zap.PanicLevel
+// produceMessage is a helper function to produce a message to Kafka with retries
+// when the error returned is retryable. When the error returned is retryable that
+// indicates the internal producer queue is full and the message could not be
+// enqueued. The producer will attempt to flush the queue to make room and try again.
+func produceMessage(producer *kefka.Producer, msg *kafka.Message) error {
+	for i := 3; i > 0; i-- {
+		err := producer.Produce(msg, nil)
+		if err == nil {
+			return nil
+		}
+
+		if kefka.IsRetryable(err) {
+			producer.Flush(time.Second * 1)
+		}
 	}
+
+	return fmt.Errorf("kafka: failed to enqueue message")
 }
